@@ -1,1 +1,2 @@
-print("ths is gonna be fun")
+print("ths is gonna be fun, isn't it?")
+print("I hope so")
