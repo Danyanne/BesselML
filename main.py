@@ -11,7 +11,7 @@ from IPython.display import display, Math
 
 
 class Solution:
-    def __init__(self, name, problem, model, tree, string_expression, r2, mse, mdl, regressor):
+    def __init__(self, name, problem, model, tree, string_expression, r2, mse, mdl, regressor, length):
         self.name = name
         self.problem = problem
         self.model = model
@@ -21,6 +21,7 @@ class Solution:
         self.mse = mse
         self.mdl = mdl
         self.regressor = regressor 
+        self.length = length
 
 
         
@@ -149,6 +150,7 @@ class Problem:
             r2 = s['objective_values'][0]  # assuming R2
             mse = s['mean_squared_error']
             mdl = s['minimum_description_length']
+            length = s['length']
 
             solution = Solution(
                 name=self.name + f": solution {idx}",
@@ -159,7 +161,8 @@ class Problem:
                 r2=r2,
                 mse=mse,
                 mdl=mdl,
-                regressor=reg
+                regressor=reg,
+                length = length
             )
             self.add_solution(solution)
 
