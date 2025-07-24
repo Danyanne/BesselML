@@ -8,7 +8,7 @@ from pyoperon import R2, MSE, InfixFormatter, FitLeastSquares, Interpreter
 import sympy as sp
 import re
 from IPython.display import display, Math
-
+import os
 
 class Solution:
     def __init__(self, name, problem, model, tree, string_expression, r2, mse, mdl, regressor, length):
@@ -74,6 +74,11 @@ class Solution:
         ax.set_title(f'{self.name} {"Train" if train else "Test"}')
         ax.legend()
         return ax
+    
+    def to_latex(self):
+        formatted_expr, b_vals, sympy_expr = self.extract_and_format(self.string_expression)
+        latex_expr = sp.latex(sympy_expr)
+        return latex_expr, b_vals
  
 
 
@@ -95,6 +100,7 @@ class Problem:
         self.args = args
         self.solutions = []
         self.symbolic_regressor = None
+        self.solve_state = False
     
 
     def add_solution(self, solution):
@@ -142,6 +148,7 @@ class Problem:
         
           
         self.symbolic_regressor = reg
+        self.solve_state = True
 
         for idx, s in enumerate(reg.pareto_front_):
             model = s['model']
@@ -167,22 +174,71 @@ class Problem:
             self.add_solution(solution)
 
 
-    def plot_mdl_vs_mse(self, ax=None):
+    def plot_l_vs_mse(self, ax=None):
         if ax is None:
             fig, ax = plt.subplots()
 
-        lengths = [s.mdl for s in self.solutions]
+        lengths = [s.length for s in self.solutions]
         r2es = [s.mse for s in self.solutions]
 
         ax.scatter(lengths, r2es, color='blue')
-        ax.set_xlabel('Minimal Description Length (MDL)')
+        ax.set_xlabel('Length')
         ax.set_ylabel('MSE')
-        ax.set_title(f'{self.name} - Length vs MSE')
+        ax.set_title(f'{self.name} - Length vs MSE (Pareto Front)')
 
         return ax
 
 
+    def export_solutions_to_latex(self, n, filename="solutions.tex"):
+        """
+        Export up to n solutions to a LaTeX file, with expressions and parameter tables.
+        The .tex file and compilation files are stored in a folder named after the problem inside 'latex_files'.
+        """
+        # Create a subfolder in latex_files named after the problem
+        safe_name = self.name.replace(" ", "_").replace("/", "_")+"no_solutions_{}".format(n)
+        problem_dir = os.path.join("latex_files", safe_name)
+        os.makedirs(problem_dir, exist_ok=True)
+        filepath = os.path.join(problem_dir, filename)
+
+        header = r"""\documentclass{article}Problem_g.export_solutions_to_latex(n=5, filename="gaussian_solutions.tex")
+\usepackage{amsmath}
+\usepackage{booktabs}
+\begin{document}
+\section*{Symbolic Regression Solutions}
+"""
+        footer = r"\end{document}"
+
+        body = ""
+        for i, sol in enumerate(self.solutions[:n]):
+            latex_expr, b_vals = sol.to_latex()
+            body += f"\\subsection*{{Solution {i+1}}}\n"
+            body += f"\\[\n{latex_expr}\n\\]\n"
+            if b_vals:
+                body += "\\begin{center}\n\\begin{tabular}{cc}\n"
+                body += "\\toprule\nParameter & Value \\\\n\\midrule\n"
+                for k, v in b_vals.items():
+                    body += f"${k}$ & {v:.6g} \\\\n"
+                body += "\\bottomrule\n\\end{tabular}\n\\end{center}\n"
+            body += "\n\\vspace{1em}\n"
+
+        with open(filepath, "w") as f:
+            f.write(header + body + footer)
+        print(f"LaTeX file written to {filepath}")
+
+
+
     def __str__(self):
-        return f"Problem: {self.name}, Train Data: {self.train_data[0].shape}, Test Data: {self.test_data[0].shape}, Solutions: {len(self.solutions)}"
+        return f"Problem: {self.name}, Train Data: {self.train_data[0].shape}, Test Data: {self.test_data[0].shape}, Solutions: {len(self.solutions)}, Solve_state: {self.solve_state}"
+
+
+class hyper_parameter_search:
+    def __init__(self, problem, args):
+        self.problem = problem
+        self.args = args
+        self.results = []
+    
+    def run(self, max_complexity, opt_parameters):
+        
+
 
 

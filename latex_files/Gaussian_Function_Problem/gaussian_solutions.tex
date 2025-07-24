@@ -1,0 +1,71 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\begin{document}
+\section*{Symbolic Regression Solutions}
+\subsection*{Solution 1}
+\[
+X_{1} b_{1} + b_{0}
+\]
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Parameter & Value \\n\midrule
+$b0$ & 1.06592 \\n$b1$ & 0.0395015 \\n\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\subsection*{Solution 2}
+\[
+b_{0} + b_{1} e^{X_{1} b_{2}}
+\]
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Parameter & Value \\n\midrule
+$b0$ & 1.48122 \\n$b1$ & -0.144054 \\n$b2$ & -0.274977 \\n\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\subsection*{Solution 3}
+\[
+b_{0} + b_{1} \left(X_{1}^{b_{4}} b_{3} + b_{2}\right)^{b_{5}}
+\]
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Parameter & Value \\n\midrule
+$b0$ & -1.36406 \\n$b1$ & 4.73487 \\n$b2$ & 1 \\n$b3$ & 0.168993 \\n$b4$ & 2 \\n$b5$ & -0.5 \\n\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\subsection*{Solution 4}
+\[
+b_{0} + b_{1} \left(X_{1}^{b_{4}} b_{3} + b_{2}\right)^{b_{5}} e^{X_{1} b_{6}}
+\]
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Parameter & Value \\n\midrule
+$b0$ & -1.6158 \\n$b1$ & 4.96775 \\n$b2$ & 1 \\n$b3$ & 0.142695 \\n$b4$ & 2 \\n$b5$ & -0.5 \\n$b6$ & 0.021723 \\n\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\subsection*{Solution 5}
+\[
+b_{0} + b_{1} \left(X_{1} b_{5} + X_{1}^{b_{4}} b_{3} + b_{2}\right)^{b_{6}}
+\]
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Parameter & Value \\n\midrule
+$b0$ & -1.25842 \\n$b1$ & 5.16699 \\n$b2$ & 1.40528 \\n$b3$ & 0.26684 \\n$b4$ & 2 \\n$b5$ & -0.657707 \\n$b6$ & -0.5 \\n\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\end{document}
