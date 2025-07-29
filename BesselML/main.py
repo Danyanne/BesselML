@@ -1,20 +1,75 @@
-import matplotlib.pyplot as plt
+"""
+BesselML: A Symbolic Regression Framework for Mathematical Functions
+
+This module implements a framework for performing symbolic regression on mathematical
+functions, with a particular focus on special functions like hypergeometric functions.
+It provides classes for defining regression problems, finding solutions, and analyzing
+results through various visualization methods.
+
+The framework uses the Operon symbolic regression engine and includes capabilities for
+parameter optimization, LaTeX export, and detailed analysis of regression results.
+
+Done by Daniel C. Summer 2025
+"""
+
+# Scientific and numerical computing
+import numpy as np
+from scipy import special
+
+# Symbolic mathematics and formatting
+import sympy as sp
+from decimal import Decimal
+
+# Machine learning and optimization
 from sklearn.metrics import r2_score, make_scorer, mean_squared_error
 from pyoperon.sklearn import SymbolicRegressor
 from pyoperon import R2, MSE, InfixFormatter, FitLeastSquares, Interpreter
-import sympy as sp
-import re
-from IPython.display import display, Math
-import os
-import numpy as np
 import optuna
+
+# Visualization and display
+import matplotlib.pyplot as plt
+from IPython.display import display, Math
+
+# System and utilities
+import os
 import re
-from typing import Tuple, Dict, Optional
-from decimal import Decimal
-from scipy import special
+from typing import Tuple, Dict
 
 class Solution:
+    """
+    Represents a solution found by symbolic regression.
+    
+    This class encapsulates a symbolic regression solution, including the mathematical
+    expression, its performance metrics, and methods for visualization and analysis.
+
+    Attributes:
+        name (str): Identifier for the solution
+        problem (Problem): Reference to the parent Problem instance
+        model: The trained model
+        tree: The expression tree representation
+        string_expression (str): String representation of the mathematical expression
+        r2 (float): R-squared score of the solution
+        mse (float): Mean squared error
+        mdl (float): Minimum description length
+        regressor: The symbolic regressor instance
+        length (int): Length/complexity of the expression
+    """
     def __init__(self, name, problem, model, tree, string_expression, r2, mse, mdl, regressor, length):
+        """
+        Initialize a Solution instance with regression results and metrics.
+        
+        Args:
+            name (str): Identifier for the solution
+            problem (Problem): Reference to the parent Problem instance
+            model: The trained model
+            tree: The expression tree representation
+            string_expression (str): String representation of the mathematical expression
+            r2 (float): R-squared score
+            mse (float): Mean squared error
+            mdl (float): Minimum description length
+            regressor: The symbolic regressor instance
+            length (int): Length/complexity of the expression
+        """
         self.name = name
         self.problem = problem
         self.model = model
@@ -165,14 +220,32 @@ class Solution:
 
 
     def display_expression(self):
+        """
+        Display the mathematical expression in LaTeX format using IPython's Math display.
+        
+        Returns:
+            IPython.display.Math: The formatted mathematical expression for display in notebooks.
+        """
         formatted_expr, b_vals, sympy_expr = self.extract_and_format(self.string_expression)
         return display(Math(sp.latex(sympy_expr)))
 
 
     def plot_results(self, ax=None, train=True):
+        """
+        Plot the regression results against true values.
+        
+        Args:
+            ax (matplotlib.axes.Axes, optional): The axes to plot on. If None, creates new figure.
+            train (bool): If True, plots training data, otherwise test data.
+            
+        Returns:
+            matplotlib.axes.Axes: The axes containing the plot.
+        """
+        # Get appropriate dataset based on train flag
         x, y = self.problem.train_data if train else self.problem.test_data
         y_pred = self.regressor.evaluate_model(self.tree, x.reshape(-1, 1))
 
+        # Create new figure if no axes provided
         fig, ax = plt.subplots() if ax is None else (None, ax)
         ax.plot(x, y, label='True', color='black')
         ax.plot(x, y_pred, label=f'Prediction ({self.name})', linestyle='--')
@@ -182,6 +255,16 @@ class Solution:
         return ax
 
     def plot_residuals(self, ax=None, train=True):
+        """
+        Plot the residuals (differences between predicted and actual values) of the model.
+        
+        Args:
+            ax (matplotlib.axes.Axes, optional): The axes to plot on. If None, creates new figure.
+            train (bool): If True, uses training data, otherwise uses test data.
+            
+        Returns:
+            matplotlib.axes.Axes: The axes containing the residuals plot.
+        """
         x, y = self.problem.train_data if train else self.problem.test_data
         y_pred = self.regressor.evaluate_model(self.tree, x.reshape(-1, 1))
         residuals = y - y_pred
@@ -198,31 +281,70 @@ class Solution:
         return ax
     
     def plot_fractional_error_hypergeom(self, x_val, ax=None):
+        """
+        Plot the fractional error of the regression against the hypergeometric function.
+        
+        This method compares the predicted values against the true hypergeometric function
+        values and plots the fractional error on a log-log scale. It also highlights
+        cosmologically relevant regions and the training range.
+        
+        Args:
+            x_val (numpy.ndarray): X values for evaluation
+            ax (matplotlib.axes.Axes, optional): The axes to plot on
+            
+        Returns:
+            matplotlib.axes.Axes: The axes containing the plot
+        """
+        # Calculate predicted and true values
         y_pred = self.regressor.evaluate_model(self.tree, x_val.reshape(-1, 1))
-        y = special.hyp2f1(2/3, 1, 7/6, x_val)  # Hypergeometric function for comparison
+        y = special.hyp2f1(2/3, 1, 7/6, x_val)
 
+        # Calculate fractional error
         fractional_error = np.abs((y - y_pred) / y)
 
         fig, ax = plt.subplots() if ax is None else (None, ax)
-        ax.plot(abs(x_val), fractional_error, label='Fractional Error', color='orange')
-        
-        ax.set_title(f'Fractional error: {self.name}')
-        ax.set_xlabel('-x')
+        ax.plot(abs(x_val), fractional_error, label=r'$\!{}_2F_1\left(\frac{2}{3},1,\frac{7}{6};x\right)$', linestyle='--', color='tab:blue')
+
+        # Log-log scale
         ax.set_xscale('log')
         ax.set_yscale('log')
+
+        # Axes labels and title
+        ax.set_xlabel(r'$-x$')
         ax.set_ylabel('Fractional Error')
-        ax.legend()
-        
+
+        # Highlight relevant regions
+        # Red-hatched: cosmologically relevant range (10^{-7} to 10^{0})
+        ax.axvspan(1e-7, 9.0, facecolor='none', hatch='////', edgecolor='red', linewidth=0.0, zorder=0, label='Relevant for Cosmology')
+
+        # Grey: training range (10^{-1} to 10^{1})
+        ax.axvspan(0.016, 9.0, color='gray', alpha=0.3, label='Training range', zorder=0)
+
+        # Legend and tight layout
+        ax.legend(loc='lower right', frameon=True)
+        ax.set_ylim(1e-12, 1e2)  # Match y-range in original figure
+        ax.grid()
+
         return ax
 
 
 
     def to_latex(self):
+        """
+        Convert the solution's expression to LaTeX format.
+        
+        This method converts the symbolic expression to LaTeX format and returns both
+        the formatted expression and a dictionary of parameter values.
+        
+        Returns:
+            Tuple[str, Dict[str, float]]: A tuple containing:
+                - latex_expr (str): The LaTeX-formatted expression
+                - b_vals (Dict[str, float]): Dictionary mapping parameter names to their values
+        """
         formatted_expr, b_vals, sympy_expr = self.extract_and_format(self.string_expression)
         latex_expr = sp.latex(sympy_expr)
         return latex_expr, b_vals
  
-
 
     def __str__(self):
         return (f"{self.name}: expr={self.string_expression}, "
@@ -235,7 +357,32 @@ class Solution:
 
 
 class Problem:
+    """
+    Represents a symbolic regression problem with associated data and solutions.
+    
+    This class manages the symbolic regression problem, including training and test data,
+    hyperparameters, and found solutions. It provides methods for solving the regression
+    problem and visualizing results.
+
+    Attributes:
+        name (str): Name identifier for the problem
+        train_data (tuple): Tuple of (X, y) arrays for training
+        test_data (tuple): Tuple of (X, y) arrays for testing
+        args (dict): Dictionary of hyperparameters for the symbolic regressor
+        solutions (list): List of Solution objects found
+        symbolic_regressor: The SymbolicRegressor instance
+        solve_state (bool): Whether the problem has been solved
+    """
     def __init__(self, name, train_data, test_data, args):
+        """
+        Initialize a Problem instance.
+        
+        Args:
+            name (str): Name identifier for the problem
+            train_data (tuple): Tuple of (X, y) arrays for training
+            test_data (tuple): Tuple of (X, y) arrays for testing
+            args (dict): Dictionary of hyperparameters for the symbolic regressor
+        """
         self.name = name
         self.train_data = train_data
         self.test_data = test_data
@@ -246,10 +393,25 @@ class Problem:
     
 
     def add_solution(self, solution):
+        """
+        Add a solution to the problem's collection of solutions.
+        
+        Args:
+            solution (Solution): A Solution instance to add to the collection
+        """
         self.solutions.append(solution)
 
     def plot_data(self, ax=None, train=True):
-
+        """
+        Plot the training or test data of the problem.
+        
+        Args:
+            ax (matplotlib.axes.Axes, optional): The axes to plot on. If None, creates new figure.
+            train (bool): If True, plots training data, otherwise test data.
+            
+        Returns:
+            matplotlib.axes.Axes: The axes containing the plot.
+        """
         fig, ax = plt.subplots()
         
         x_train, y_train = self.train_data
@@ -272,18 +434,22 @@ class Problem:
   
     
     def solve(self):
-        reg = SymbolicRegressor(
-            allowed_symbols=self.args['allowed_symbols'], #"add,sub,mul,aq,sin,constant,variable", 
-            epsilon =self.args['epsilon'], #, 10**(-2)
-            objectives= self.args["objectives"], #[ 'r2', 'length' ],
-            max_evaluations= self.args["max_evaluations"], #1000000,
-            max_length= self.args["max_length"], #50,
-            max_time= self.args["max_time"], #900,
-            n_threads= self.args["n_threads"], #8
-            generations= self.args["generations"], # 100,
-            tournament_size= self.args["tournament_size"], # 4,
-            #initialization_method= self.args["initialization_method"], # "random"
-        )
+        """
+        Solve the symbolic regression problem using the configured parameters.
+        
+        This method initializes and runs the SymbolicRegressor with the specified
+        hyperparameters, then processes and stores the solutions found in the Pareto front.
+        The solutions are stored as Solution objects in the solutions list.
+        
+        The method uses all parameters provided in the args dictionary to initialize
+        the SymbolicRegressor. Any valid parameter for SymbolicRegressor can be included
+        in the args dictionary and it will be passed to the constructor.
+        """
+        # Filter out any None values from args to avoid passing undefined parameters
+        valid_args = {k: v for k, v in self.args.items() if v is not None}
+        
+        # Initialize SymbolicRegressor with all provided arguments
+        reg = SymbolicRegressor(**valid_args)
 
 
         reg.fit(self.train_data[0].reshape(-1, 1), self.train_data[1].ravel())
@@ -322,6 +488,18 @@ class Problem:
 
 
     def plot_l_vs_mse(self, ax=None):
+        """
+        Plot the relationship between expression length and Mean Squared Error for all solutions.
+        
+        This method creates a scatter plot showing the trade-off between model complexity
+        (expression length) and accuracy (MSE) for all solutions in the Pareto front.
+        
+        Args:
+            ax (matplotlib.axes.Axes, optional): The axes to plot on. If None, creates new figure.
+            
+        Returns:
+            matplotlib.axes.Axes: The axes containing the plot.
+        """
         if ax is None:
             fig, ax = plt.subplots()
 
@@ -384,11 +562,36 @@ class Problem:
 
 
 class hyper_parameter_search:
+    """
+    A class for performing hyperparameter optimization for symbolic regression problems.
+    
+    This class uses Optuna to perform hyperparameter optimization for various parameters
+    of the symbolic regression process, such as epsilon and population size.
+    
+    Attributes:
+        problem (Problem): The symbolic regression problem to optimize
+        results (list): List to store optimization results
+    """
     def __init__(self, problem):
+        """
+        Initialize the hyperparameter search.
+        
+        Args:
+            problem (Problem): The symbolic regression problem to optimize
+        """
         self.problem = problem
         self.results = []
     
     def run_search_epsilon(self):
+        """
+        Perform hyperparameter optimization for the epsilon parameter.
+        
+        This method uses Optuna to find the optimal value for the epsilon parameter,
+        which controls the convergence threshold in symbolic regression.
+        
+        Returns:
+            dict: The best parameters found during optimization
+        """
         def objective(trial):
             self.problem.solutions = []
             epsilon = trial.suggest_float('epsilon', 1e-6, 1e-2)
@@ -406,6 +609,15 @@ class hyper_parameter_search:
     
 
     def run_search_population_size(self):
+        """
+        Perform hyperparameter optimization for the population size parameter.
+        
+        This method uses Optuna to find the optimal value for the population size,
+        which controls the number of individuals in each generation during evolution.
+        
+        Returns:
+            dict: The best parameters found during optimization
+        """
         def objective(trial):
             self.problem.solutions = []
             population_size = trial.suggest_int('population_size', 50, 500)
