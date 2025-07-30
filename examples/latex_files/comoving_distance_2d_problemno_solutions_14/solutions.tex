@@ -1,0 +1,286 @@
+\documentclass{article}
+        \usepackage{amsmath}
+        \usepackage{booktabs}
+        \begin{document}
+        \section*{Symbolic Regression Solutions}
+        \subsection*{Solution 1}
+\[
+X_{1} b_{0} + b_{1}
+\]
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Parameter & Value \\
+\midrule
+$b0$ & 2018.78 \\
+$b1$ & 1001.52 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\subsection*{Solution 2}
+\[
+b_{0} + b_{1} e^{X_{1} b_{2}}
+\]
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Parameter & Value \\
+\midrule
+$b0$ & 7775.72 \\
+$b1$ & 7766.93 \\
+$b2$ & -0.563743 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\subsection*{Solution 3}
+\[
+X_{2}^{X_{1} b_{2}} b_{0} b_{1}^{X_{1} b_{2}} + b_{3}
+\]
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Parameter & Value \\
+\midrule
+$b0$ & -9173.1 \\
+$b1$ & 0.257704 \\
+$b2$ & 0.153582 \\
+$b3$ & 9359.37 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\subsection*{Solution 4}
+\[
+b_{0} + b_{1} e^{X_{2}^{X_{1} b_{3}} b_{2}^{X_{1} b_{3}}}
+\]
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Parameter & Value \\
+\midrule
+$b0$ & 16324.2 \\
+$b1$ & 5950.57 \\
+$b2$ & 0.257753 \\
+$b3$ & 0.0909017 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\subsection*{Solution 5}
+\[
+\frac{X_{1} b_{0}}{\sqrt{X_{1}^{2} b_{1} + X_{1} X_{2} b_{2} + X_{2}^{2} b_{3} + 1}} + b_{4}
+\]
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Parameter & Value \\
+\midrule
+$b0$ & 4467.35 \\
+$b1$ & 0.177362 \\
+$b2$ & 1.65694 \\
+$b3$ & 3.86984 \\
+$b4$ & 119.124 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\subsection*{Solution 6}
+\[
+\frac{X_{1} b_{0}}{\sqrt{X_{2}^{2} b_{1} + 1}} + b_{2} + b_{3} e^{X_{1} b_{4}}
+\]
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Parameter & Value \\
+\midrule
+$b0$ & 1762.9 \\
+$b1$ & 38.0065 \\
+$b2$ & 4175.81 \\
+$b3$ & 4228.74 \\
+$b4$ & -0.88787 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\subsection*{Solution 7}
+\[
+b_{0} e^{X_{1} b_{5}} + b_{0} \log{\left(X_{2}^{X_{1} b_{2}} b_{1}^{X_{1} b_{2}} \right)} + b_{3}
+\]
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Parameter & Value \\
+\midrule
+$b0$ & -4835.32 \\
+$b1$ & 1.1322 \\
+$b2$ & 0.130743 \\
+$b3$ & 4800.09 \\
+$b4$ & 4835.32 \\
+$b5$ & -0.786682 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\subsection*{Solution 8}
+\[
+\frac{X_{1} b_{0}}{\sqrt{X_{2}^{2} b_{1} + 1} \sqrt{X_{2}^{2} b_{2} + 1}} + b_{3} + \frac{b_{4} e^{X_{1} b_{5}}}{\sqrt{X_{2}^{2} b_{1} + 1}}
+\]
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Parameter & Value \\
+\midrule
+$b0$ & 1760.25 \\
+$b1$ & 0.447342 \\
+$b2$ & 36.7405 \\
+$b3$ & 4194.65 \\
+$b4$ & 4356.78 \\
+$b5$ & -0.891083 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\subsection*{Solution 9}
+\[
+b_{0} + \frac{b_{1} e^{X_{1} b_{5}}}{\sqrt{X_{2}^{2} b_{4} + 1}} + \frac{b_{1} \log{\left(X_{2}^{X_{1} b_{3}} b_{2}^{X_{1} b_{3}} \right)}}{\sqrt{X_{2}^{2} b_{4} + 1}}
+\]
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Parameter & Value \\
+\midrule
+$b0$ & 4767.01 \\
+$b1$ & 4896.12 \\
+$b2$ & 1.11596 \\
+$b3$ & 0.130743 \\
+$b4$ & 0.355095 \\
+$b5$ & -0.793326 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\subsection*{Solution 10}
+\[
+b_{0} e^{\frac{X_{1} b_{5}}{\sqrt{e^{X_{2} b_{6}} + 1}}} + b_{0} \log{\left(X_{2}^{X_{1} b_{2}} b_{1}^{X_{1} b_{2}} \right)} + b_{3}
+\]
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Parameter & Value \\
+\midrule
+$b0$ & -4553.05 \\
+$b1$ & 1.14114 \\
+$b2$ & 0.153582 \\
+$b3$ & 4506.35 \\
+$b4$ & 4553.05 \\
+$b5$ & -0.875445 \\
+$b6$ & -9.47468 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\subsection*{Solution 11}
+\[
+\frac{X_{1} b_{0}}{\sqrt{X_{2}^{2} b_{1} + 1}} + b_{2} + b_{3} e^{\frac{X_{1} b_{4}}{\sqrt{1 + \frac{1}{X_{2}^{2} b_{5} e^{X_{1} b_{6}} + e^{X_{1} b_{6}}}}}}
+\]
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Parameter & Value \\
+\midrule
+$b0$ & 1833.78 \\
+$b1$ & 37.1501 \\
+$b2$ & 3934.11 \\
+$b3$ & 3953.2 \\
+$b4$ & -1.01267 \\
+$b5$ & 22.384 \\
+$b6$ & 0.959906 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\subsection*{Solution 12}
+\[
+b_{0} e^{\frac{X_{1} b_{5}}{\sqrt{1 + \frac{1}{X_{2}^{2} b_{6} e^{X_{1} b_{7}} + e^{X_{1} b_{7}}}}}} + b_{0} \log{\left(X_{2}^{X_{1} b_{2}} b_{1}^{X_{1} b_{2}} \right)} + b_{3}
+\]
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Parameter & Value \\
+\midrule
+$b0$ & -4424.42 \\
+$b1$ & 1.05768 \\
+$b2$ & 0.148758 \\
+$b3$ & 4417.75 \\
+$b4$ & 4424.42 \\
+$b5$ & -0.898909 \\
+$b6$ & 34.4245 \\
+$b7$ & 0.948306 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\subsection*{Solution 13}
+\[
+b_{0} e^{\frac{X_{1} b_{5}}{\sqrt{\frac{X_{1}^{2} b_{6}}{X_{2}^{2} b_{7} + 1} + \frac{X_{1} b_{8}}{X_{2}^{2} b_{7} + 1} + \frac{b_{9}}{X_{2}^{2} b_{7} + 1} + 1}}} + b_{0} \log{\left(X_{2}^{X_{1} b_{2}} b_{1}^{X_{1} b_{2}} \right)} + b_{3}
+\]
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Parameter & Value \\
+\midrule
+$b0$ & -4356.5 \\
+$b1$ & 1.01207 \\
+$b2$ & 0.148758 \\
+$b3$ & 4356.97 \\
+$b4$ & 4356.5 \\
+$b5$ & -0.897785 \\
+$b6$ & 0.24998 \\
+$b7$ & 59.8486 \\
+$b8$ & 1.17303 \\
+$b9$ & 1.37612 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\subsection*{Solution 14}
+\[
+b_{0} e^{\frac{X_{1} b_{5}}{\sqrt{\frac{X_{1}^{2} b_{6}}{X_{2}^{4} b_{7} + X_{2}^{2} b_{8} + 1} + \frac{X_{1} b_{9}}{X_{2}^{4} b_{7} + X_{2}^{2} b_{8} + 1} + \frac{b_{10}}{X_{2}^{4} b_{7} + X_{2}^{2} b_{8} + 1} + 1}}} + b_{0} \log{\left(X_{2}^{X_{1} b_{2}} b_{1}^{X_{1} b_{2}} \right)} + b_{3}
+\]
+\begin{center}
+\begin{tabular}{cc}
+\toprule
+Parameter & Value \\
+\midrule
+$b0$ & -4371.14 \\
+$b1$ & 1.01138 \\
+$b2$ & 0.148758 \\
+$b3$ & 4367.25 \\
+$b4$ & 4371.14 \\
+$b5$ & -0.884985 \\
+$b6$ & 0.257578 \\
+$b7$ & 438.294 \\
+$b8$ & 41.8899 \\
+$b9$ & 1.14075 \\
+$b10$ & 1.26303 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\end{document}

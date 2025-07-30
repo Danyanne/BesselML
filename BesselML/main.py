@@ -82,7 +82,192 @@ class Solution:
         self.length = length
     
 
+
+
+
+
+
     def extract_and_format(self, variable_prefix: str = 'X') -> Tuple[str, Dict[str, float], sp.Expr]:
+            """
+            Parses the symbolic expression string stored in `self.string_expression`, replacing
+            only "complex" numerical constants with symbolic parameters `b0`, `b1`, ..., and
+            returns a LaTeX-formatted string along with a dictionary of these parameters.
+
+            [Original docstring content preserved...]
+            """
+            
+            expr_str = self.string_expression
+            
+            # Extract variable names more efficiently
+            var_pattern = rf'{re.escape(variable_prefix)}\d+'
+            var_names = sorted(set(re.findall(var_pattern, expr_str)), 
+                            key=lambda x: int(x[len(variable_prefix):]))
+            
+
+            # Build local dictionary with only needed symbols
+            local_dict = {name: sp.Symbol(name) for name in var_names}
+
+
+            
+            # Additional common functions that might be needed
+            local_dict.update({
+                "sqrt": sp.sqrt,
+                "exp": sp.exp,
+                "log": sp.log,
+                "sin": sp.sin,
+                "cos": sp.cos,
+                "tan": sp.tan,
+                "pi": sp.pi,
+                "e": sp.E
+            })
+
+            
+            try:
+                expr = sp.sympify(expr_str, locals=local_dict)
+                expanded = sp.expand(expr)
+            except (sp.SympifyError, ValueError) as e:
+                raise ValueError(f"Failed to parse expression: {e}")
+            
+
+            def is_complex_constant(c: sp.Basic) -> bool:
+                """Check if a constant should be replaced with a b parameter."""
+                if not c.is_Number:
+                    return False
+                    
+                if isinstance(c, sp.Float):
+                    # More robust decimal counting using Decimal
+                    try:
+                        dec = Decimal(str(float(c.evalf())))
+                        # Get the string representation and count significant decimals
+                        dec_str = str(abs(dec))
+                        if '.' in dec_str:
+                            # Remove trailing zeros and count remaining decimals
+                            decimal_part = dec_str.split('.')[-1].rstrip('0')
+                            return len(decimal_part) > 2
+                        return False
+                    except:
+                        # Fallback to original method
+                        return False
+                        
+                elif isinstance(c, sp.Rational):
+                    return abs(c.q) > 10
+                
+                # Don't replace special constants
+                if c in (sp.pi, sp.E, sp.I):
+                    return False
+                    
+                return False
+            
+            # Collect all complex constants in a consistent order
+            complex_constants = []
+            # seen = set()
+
+                    
+                    
+            def get_ordered_constants_by_str(expanded_expr: sp.Expr) -> list[sp.Float]:
+                """
+                Extracts numeric constants from str(expanded_expr) in left-to-right appearance order,
+                including scientific notation. Filters only complex constants.
+                """
+                expr_str = str(expanded_expr)
+
+                # Matches integers, floats, scientific notation
+                number_pattern = r'(?<![\w.])([-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?)(?![\w.])'
+                matches = list(re.finditer(number_pattern, expr_str))
+
+                seen = set()
+                constants_ordered = []
+
+                for match in matches:
+                    raw_val = match.group(1)
+                    try:
+                        dec = Decimal(raw_val)
+                        abs_dec_str = str(abs(dec.normalize()))
+                        # Remove trailing zeros in decimal representation
+                        if '.' in abs_dec_str:
+                            decimal_part = abs_dec_str.split('.')[-1].rstrip('0')
+                            is_complex = len(decimal_part) > 2
+                        else:
+                            is_complex = False  # integer
+
+                        if is_complex:
+                            float_val = float(dec)
+                            if float_val not in seen:
+                                seen.add(float_val)
+                                constants_ordered.append(sp.Float(float_val))
+                    except Exception:
+                        continue
+
+                return constants_ordered
+            
+            # collect_constants(expanded)
+            complex_constants = get_ordered_constants_by_str(expanded)
+
+        
+        
+            # Create replacement mapping
+            #replacements = {const: sp.Symbol(f"b{i}") for i, const in enumerate(complex_constants)}
+            # Apply replacements
+
+            #expr_with_b = expanded.subs(replacements)
+
+            # Replacement pairs list
+
+            replacement_pairs = [(const, sp.Symbol(f"b{i}")) for i, const in enumerate(complex_constants)]
+
+            def replacer(expr):
+                for orig_const, symb in replacement_pairs:
+                    if expr.is_Number and sp.Abs(abs(expr) - abs(orig_const)) < 1e-12:
+                        return symb
+
+                return None
+
+            expr_with_b = expanded.replace(lambda expr: expr.is_Number, replacer)
+
+
+            def clean_latex(expr: sp.Basic) -> str:
+                """Clean up LaTeX formatting."""
+                # Generate LaTeX with better default options
+                latex = sp.latex(expr, 
+                                fold_short_frac=True, 
+                                fold_frac_powers=True, 
+                                mul_symbol='·',
+                                long_frac_ratio=3,  # Use \frac for better readability
+                                mat_delim='(',
+                                mat_str='matrix')
+                
+                # Remove redundant multiplications by 1
+                latex = re.sub(r'(?<![0-9])1\s*·\s*', '', latex)  # Remove 1·X patterns
+                latex = re.sub(r'\s*·\s*1(?![0-9])', '', latex)   # Remove X·1 patterns
+                
+                # Clean up spacing
+                latex = re.sub(r'\s*·\s*', '·', latex)
+                latex = re.sub(r'\s+', ' ', latex)  # Normalize whitespace
+                
+                # Improve subscript formatting for variables
+                latex = re.sub(rf'{variable_prefix}_{{(\d+)}}', rf'{variable_prefix}_{{\1}}', latex)
+                
+                # Ensure consistent b parameter formatting
+                latex = re.sub(r'b(\d+)', r'b_{\1}', latex)
+                
+                return latex.strip()
+            
+            formatted_str = clean_latex(expr_with_b)
+            
+            # Create b_vals dictionary with consistent float conversion
+            b_vals = {}
+            for i, const in enumerate(complex_constants):
+                try:
+                    b_vals[f"b{i}"] = float(const.evalf())
+                except:
+                    # Handle edge cases where evalf() might fail
+                    b_vals[f"b{i}"] = complex(const.evalf())
+            
+            return formatted_str, b_vals, expr_with_b
+
+
+
+    def extract_and_format_old_version(self, variable_prefix: str = 'X') -> Tuple[str, Dict[str, float], sp.Expr]:
         """
         Parses the symbolic expression string stored in `self.string_expression`, replacing
         only "complex" numerical constants with symbolic parameters `b0`, `b1`, ..., and
@@ -280,7 +465,7 @@ class Solution:
         
         return ax
     
-    def plot_fractional_error_hypergeom(self, x_val, ax=None):
+    def plot_fractional_error_hypergeom(self, x_val, coeff, ax=None):
         """
         Plot the fractional error of the regression against the hypergeometric function.
         
@@ -297,13 +482,13 @@ class Solution:
         """
         # Calculate predicted and true values
         y_pred = self.regressor.evaluate_model(self.tree, x_val.reshape(-1, 1))
-        y = special.hyp2f1(2/3, 1, 7/6, x_val)
+        y = special.hyp2f1(coeff[0], coeff[1], coeff[2], x_val)
 
         # Calculate fractional error
         fractional_error = np.abs((y - y_pred) / y)
 
         fig, ax = plt.subplots() if ax is None else (None, ax)
-        ax.plot(abs(x_val), fractional_error, label=r'$\!{}_2F_1\left(\frac{2}{3},1,\frac{7}{6};x\right)$', linestyle='--', color='tab:blue')
+        ax.plot(abs(x_val), fractional_error, label=r'$\!{}_2F_1\left(\frac{1}{3},1,\frac{11}{6};x\right)$', linestyle='--', color='tab:blue')
 
         # Log-log scale
         ax.set_xscale('log')
@@ -322,7 +507,7 @@ class Solution:
 
         # Legend and tight layout
         ax.legend(loc='lower right', frameon=True)
-        ax.set_ylim(1e-12, 1e2)  # Match y-range in original figure
+        ax.set_ylim(1e-12, 1e3)  # Match y-range in original figure
         ax.grid()
 
         return ax
@@ -451,8 +636,10 @@ class Problem:
         # Initialize SymbolicRegressor with all provided arguments
         reg = SymbolicRegressor(**valid_args)
 
-
-        reg.fit(self.train_data[0].reshape(-1, 1), self.train_data[1].ravel())
+        if self.train_data[0].ndim == 1:
+            reg.fit(self.train_data[0].reshape(-1, 1), self.train_data[1].ravel())
+        else:
+            reg.fit(self.train_data[0], self.train_data[1].ravel())
         res = [(s['objective_values'], s['tree'], s['minimum_description_length'], s['mean_squared_error']) for s in reg.pareto_front_]
         
         #print(reg.pareto_front_[0].keys(), type(reg.pareto_front_[0]))
