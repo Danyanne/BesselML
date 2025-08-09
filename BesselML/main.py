@@ -80,6 +80,7 @@ class Solution:
         self.mdl = mdl
         self.regressor = regressor 
         self.length = length
+        self.sympy_expr = None
     
 
 
@@ -121,7 +122,10 @@ class Solution:
                 "e": sp.E
             })
 
-            
+
+
+
+
             try:
                 expr = sp.sympify(expr_str, locals=local_dict)
                 expanded = sp.expand(expr)
@@ -129,50 +133,21 @@ class Solution:
                 raise ValueError(f"Failed to parse expression: {e}")
             
 
-            def is_complex_constant(c: sp.Basic) -> bool:
-                """Check if a constant should be replaced with a b parameter."""
-                if not c.is_Number:
-                    return False
-                    
-                if isinstance(c, sp.Float):
-                    # More robust decimal counting using Decimal
-                    try:
-                        dec = Decimal(str(float(c.evalf())))
-                        # Get the string representation and count significant decimals
-                        dec_str = str(abs(dec))
-                        if '.' in dec_str:
-                            # Remove trailing zeros and count remaining decimals
-                            decimal_part = dec_str.split('.')[-1].rstrip('0')
-                            return len(decimal_part) > 2
-                        return False
-                    except:
-                        # Fallback to original method
-                        return False
-                        
-                elif isinstance(c, sp.Rational):
-                    return abs(c.q) > 10
-                
-                # Don't replace special constants
-                if c in (sp.pi, sp.E, sp.I):
-                    return False
-                    
-                return False
             
             # Collect all complex constants in a consistent order
             complex_constants = []
             # seen = set()
 
-                    
-                    
-            def get_ordered_constants_by_str(expanded_expr: sp.Expr) -> list[sp.Float]:
-                """
-                Extracts numeric constants from str(expanded_expr) in left-to-right appearance order,
-                including scientific notation. Filters only complex constants.
-                """
-                expr_str = str(expanded_expr)
 
-                # Matches integers, floats, scientific notation
-                number_pattern = r'(?<![\w.])([-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?)(?![\w.])'
+
+            def get_ordered_constants_positive(expanded_expr: sp.Expr) -> list[sp.Float]:
+                """
+                Extract numeric constants in left-to-right order by magnitude only (positive values).
+                Signs are handled by the expression itself.
+                """
+                expr_str = sp.ccode(expanded_expr)  # sign-safe form for regex scanning
+
+                number_pattern = r'(?<![\w.])([+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?)(?![\w.])'
                 matches = list(re.finditer(number_pattern, expr_str))
 
                 seen = set()
@@ -182,48 +157,41 @@ class Solution:
                     raw_val = match.group(1)
                     try:
                         dec = Decimal(raw_val)
-                        abs_dec_str = str(abs(dec.normalize()))
-                        # Remove trailing zeros in decimal representation
-                        if '.' in abs_dec_str:
-                            decimal_part = abs_dec_str.split('.')[-1].rstrip('0')
+                        # Always take absolute value for storage
+                        dec_abs = abs(dec)
+                        dec_str = str(dec_abs.normalize())
+                        if '.' in dec_str:
+                            decimal_part = dec_str.split('.')[-1].rstrip('0')
                             is_complex = len(decimal_part) > 2
                         else:
-                            is_complex = False  # integer
+                            is_complex = False
 
                         if is_complex:
-                            float_val = float(dec)
+                            float_val = float(dec_abs)
                             if float_val not in seen:
                                 seen.add(float_val)
-                                constants_ordered.append(sp.Float(float_val))
+                                constants_ordered.append(sp.Float(float_val, 12))
+                                
                     except Exception:
                         continue
 
                 return constants_ordered
+
             
             # collect_constants(expanded)
-            complex_constants = get_ordered_constants_by_str(expanded)
+            complex_constants = get_ordered_constants_positive(expanded)
 
-        
-        
-            # Create replacement mapping
-            #replacements = {const: sp.Symbol(f"b{i}") for i, const in enumerate(complex_constants)}
-            # Apply replacements
 
-            #expr_with_b = expanded.subs(replacements)
-
-            # Replacement pairs list
+            rounded_expanded = expanded.xreplace({
+                f: sp.Float(f, 12)
+                for f in expanded.atoms(sp.Float)
+            })
 
             replacement_pairs = [(const, sp.Symbol(f"b{i}")) for i, const in enumerate(complex_constants)]
 
-            def replacer(expr):
-                for orig_const, symb in replacement_pairs:
-                    if expr.is_Number and sp.Abs(abs(expr) - abs(orig_const)) < 1e-12:
-                        return symb
 
-                return None
-
-            expr_with_b = expanded.replace(lambda expr: expr.is_Number, replacer)
-
+            #expr_with_b = expanded.replace(lambda expr: expr.is_Number, replacer)
+            expr_with_b = rounded_expanded.subs(replacement_pairs) 
 
             def clean_latex(expr: sp.Basic) -> str:
                 """Clean up LaTeX formatting."""
@@ -263,143 +231,10 @@ class Solution:
                     # Handle edge cases where evalf() might fail
                     b_vals[f"b{i}"] = complex(const.evalf())
             
+            self.sympy_expr = expr_with_b
+            
             return formatted_str, b_vals, expr_with_b
 
-
-
-    def extract_and_format_old_version(self, variable_prefix: str = 'X') -> Tuple[str, Dict[str, float], sp.Expr]:
-        """
-        Parses the symbolic expression string stored in `self.string_expression`, replacing
-        only "complex" numerical constants with symbolic parameters `b0`, `b1`, ..., and
-        returns a LaTeX-formatted string along with a dictionary of these parameters.
-
-        [Original docstring content preserved...]
-        """
-        
-        # Input validation
-        if not hasattr(self, 'string_expression') or not self.string_expression:
-            raise ValueError("No expression string found in self.string_expression")
-        
-        expr_str = self.string_expression
-        
-        # Extract variable names more efficiently
-        var_pattern = rf'{re.escape(variable_prefix)}\d+'
-        var_names = sorted(set(re.findall(var_pattern, expr_str)), 
-                        key=lambda x: int(x[len(variable_prefix):]))
-        
-        # Build local dictionary with only needed symbols
-        local_dict = {name: sp.Symbol(name) for name in var_names}
-        local_dict["sqrt"] = sp.sqrt
-        
-        # Additional common functions that might be needed
-        local_dict.update({
-            "exp": sp.exp,
-            "log": sp.log,
-            "sin": sp.sin,
-            "cos": sp.cos,
-            "tan": sp.tan,
-            "pi": sp.pi,
-            "e": sp.E
-        })
-        
-        try:
-            expr = sp.sympify(expr_str, locals=local_dict)
-            expanded = sp.expand(expr)
-        except (sp.SympifyError, ValueError) as e:
-            raise ValueError(f"Failed to parse expression: {e}")
-        
-        def is_complex_constant(c: sp.Basic) -> bool:
-            """Check if a constant should be replaced with a b parameter."""
-            if not c.is_Number:
-                return False
-                
-            if isinstance(c, sp.Float):
-                # More robust decimal counting using Decimal
-                try:
-                    dec = Decimal(str(float(c.evalf())))
-                    # Get the string representation and count significant decimals
-                    dec_str = str(abs(dec))
-                    if '.' in dec_str:
-                        # Remove trailing zeros and count remaining decimals
-                        decimal_part = dec_str.split('.')[-1].rstrip('0')
-                        return len(decimal_part) > 2
-                    return False
-                except:
-                    # Fallback to original method
-                    return False
-                    
-            elif isinstance(c, sp.Rational):
-                return abs(c.q) > 10
-            
-            # Don't replace special constants
-            if c in (sp.pi, sp.E, sp.I):
-                return False
-                
-            return False
-        
-        # Collect all complex constants in a consistent order
-        complex_constants = []
-        seen = set()
-        
-        def collect_constants(expr: sp.Basic) -> None:
-            """Recursively collect complex constants in preorder traversal."""
-            if expr.is_Number and is_complex_constant(expr):
-                # Use a hashable representation to avoid duplicates
-                expr_hash = hash(expr.evalf())
-                if expr_hash not in seen:
-                    seen.add(expr_hash)
-                    complex_constants.append(expr)
-            elif hasattr(expr, 'args'):
-                for arg in expr.args:
-                    collect_constants(arg)
-        
-        collect_constants(expanded)
-        
-        # Create replacement mapping
-        replacements = {const: sp.Symbol(f"b{i}") for i, const in enumerate(complex_constants)}
-        
-        # Apply replacements
-        expr_with_b = expanded.subs(replacements)
-        
-        def clean_latex(expr: sp.Basic) -> str:
-            """Clean up LaTeX formatting."""
-            # Generate LaTeX with better default options
-            latex = sp.latex(expr, 
-                            fold_short_frac=True, 
-                            fold_frac_powers=True, 
-                            mul_symbol='·',
-                            long_frac_ratio=3,  # Use \frac for better readability
-                            mat_delim='(',
-                            mat_str='matrix')
-            
-            # Remove redundant multiplications by 1
-            latex = re.sub(r'(?<![0-9])1\s*·\s*', '', latex)  # Remove 1·X patterns
-            latex = re.sub(r'\s*·\s*1(?![0-9])', '', latex)   # Remove X·1 patterns
-            
-            # Clean up spacing
-            latex = re.sub(r'\s*·\s*', '·', latex)
-            latex = re.sub(r'\s+', ' ', latex)  # Normalize whitespace
-            
-            # Improve subscript formatting for variables
-            latex = re.sub(rf'{variable_prefix}_{{(\d+)}}', rf'{variable_prefix}_{{\1}}', latex)
-            
-            # Ensure consistent b parameter formatting
-            latex = re.sub(r'b(\d+)', r'b_{\1}', latex)
-            
-            return latex.strip()
-        
-        formatted_str = clean_latex(expr_with_b)
-        
-        # Create b_vals dictionary with consistent float conversion
-        b_vals = {}
-        for i, const in enumerate(complex_constants):
-            try:
-                b_vals[f"b{i}"] = float(const.evalf())
-            except:
-                # Handle edge cases where evalf() might fail
-                b_vals[f"b{i}"] = complex(const.evalf())
-        
-        return formatted_str, b_vals, expr_with_b
 
 
 
@@ -438,6 +273,7 @@ class Solution:
         ax.set_title(f'{self.name} {"Train" if train else "Test"}')
         ax.legend()
         return ax
+
 
     def plot_residuals(self, ax=None, train=True):
         """
@@ -531,9 +367,51 @@ class Solution:
         return latex_expr, b_vals
  
 
+    def perform_functional_analysis(self):
+        """
+        Perform a functional analysis of the solution. Computes the relevant limits, and derivatives
+        """
+
+        formatted_expr, b_vals, sympy_expr = self.extract_and_format(self.string_expression)
+
+
+        # Compute limits at 0 and infinity
+        limit_at_zero = sp.limit(sympy_expr, sp.Symbol('X1'), 0)
+        limit_at_infinity = sp.limit(sympy_expr, sp.Symbol('X1'), sp.oo)
+
+        # Compute first and second derivatives
+        first_derivative = sp.diff(sympy_expr, sp.Symbol('X1'))
+        second_derivative = sp.diff(first_derivative, sp.Symbol('X2'))
+
+        return {
+            'limit_at_zero': limit_at_zero,
+            'limit_at_infinity': limit_at_infinity,
+            'first_derivative': first_derivative,
+            'second_derivative': second_derivative
+        }
+    
+    def compute_limits(self, at_value):
+        """
+        Compute the limit of the symbolic expression at a given value.
+        
+        Args:
+            at_value (float): The value at which to compute the limit
+            
+        Returns:
+            sp.Expr: The computed limit
+        """
+        x = sp.Symbol('X1')
+        expr = sp.sympify(self.string_expression)
+        return sp.limit(expr, x, at_value)
+    
+
+    
     def __str__(self):
         return (f"{self.name}: expr={self.string_expression}, "
             f"R²={self.r2:.4f}, MSE={self.mse:.4f}, MDL={self.mdl:.2f}")
+    
+
+    
     
 
 
@@ -671,6 +549,8 @@ class Problem:
                 regressor=reg,
                 length = length
             )
+            solution.extract_and_format()  # Ensure sympy_expr is set
+
             self.add_solution(solution)
 
 
@@ -691,9 +571,9 @@ class Problem:
             fig, ax = plt.subplots()
 
         lengths = [s.length for s in self.solutions]
-        r2es = [s.mse for s in self.solutions]
+        mse = [s.mse for s in self.solutions]
 
-        ax.scatter(lengths, r2es, color='blue')
+        ax.scatter(lengths, mse, color='blue')
         ax.set_xlabel('Length')
         ax.set_ylabel('MSE')
         ax.set_yscale('log')
