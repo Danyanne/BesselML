@@ -4,36 +4,30 @@ BesselML: A Symbolic Regression Framework for Mathematical Functions
 This module implements a framework for performing symbolic regression on mathematical
 functions, with a particular focus on special functions like hypergeometric functions.
 It provides classes for defining regression problems, finding solutions, and analyzing
-results through various visualization methods.
+results through various visualization methods. Provides additional functions for analysis and 
+reoptimization of symbolic expressions.
 
-The framework uses the Operon symbolic regression engine and includes capabilities for
-parameter optimization, LaTeX export, and detailed analysis of regression results.
 
-Done by Daniel C. Summer 2025
+Done by Daniel C. Summer 2025 at Oxford University, UK.
 """
 
-# Scientific and numerical computing
+
 import numpy as np
 from scipy import special
-
-# Symbolic mathematics and formatting
 import sympy as sp
 from decimal import Decimal
-
-# Machine learning and optimization
 from sklearn.metrics import r2_score, make_scorer, mean_squared_error
+from typing import Dict, List, Any, Tuple, Optional
 from pyoperon.sklearn import SymbolicRegressor
 from pyoperon import R2, MSE, InfixFormatter, FitLeastSquares, Interpreter
 import optuna
-
-# Visualization and display
 import matplotlib.pyplot as plt
 from IPython.display import display, Math
-
-# System and utilities
 import os
 import re
 from typing import Tuple, Dict
+from scipy.optimize import minimize
+
 
 class Solution:
     """
@@ -53,22 +47,11 @@ class Solution:
         mdl (float): Minimum description length
         regressor: The symbolic regressor instance
         length (int): Length/complexity of the expression
+        b_vals (Dict[str, float]): Dictionary of parameter values extracted from the expression
     """
     def __init__(self, name, problem, model, tree, string_expression, r2, mse, mdl, regressor, length):
         """
         Initialize a Solution instance with regression results and metrics.
-        
-        Args:
-            name (str): Identifier for the solution
-            problem (Problem): Reference to the parent Problem instance
-            model: The trained model
-            tree: The expression tree representation
-            string_expression (str): String representation of the mathematical expression
-            r2 (float): R-squared score
-            mse (float): Mean squared error
-            mdl (float): Minimum description length
-            regressor: The symbolic regressor instance
-            length (int): Length/complexity of the expression
         """
         self.name = name
         self.problem = problem
@@ -81,20 +64,13 @@ class Solution:
         self.regressor = regressor 
         self.length = length
         self.sympy_expr = None
+        self.b_vals = None 
     
-
-
-
-
-
-
     def extract_and_format(self, variable_prefix: str = 'X') -> Tuple[str, Dict[str, float], sp.Expr]:
             """
             Parses the symbolic expression string stored in `self.string_expression`, replacing
             only "complex" numerical constants with symbolic parameters `b0`, `b1`, ..., and
-            returns a LaTeX-formatted string along with a dictionary of these parameters.
-
-            [Original docstring content preserved...]
+            returns a LaTeX-formatted string along with a dictionary of these parameters and sympy expression.
             """
             
             expr_str = self.string_expression
@@ -110,7 +86,7 @@ class Solution:
 
 
             
-            # Additional common functions that might be needed
+            # Additional common functions that might be needed, defined using sympy
             local_dict.update({
                 "sqrt": sp.sqrt,
                 "exp": sp.exp,
@@ -122,10 +98,7 @@ class Solution:
                 "e": sp.E
             })
 
-
-
-
-
+            # Parse the expression string using sympy
             try:
                 expr = sp.sympify(expr_str, locals=local_dict)
                 expanded = sp.expand(expr)
@@ -133,19 +106,17 @@ class Solution:
                 raise ValueError(f"Failed to parse expression: {e}")
             
 
-            
             # Collect all complex constants in a consistent order
             complex_constants = []
-            # seen = set()
-
-
 
             def get_ordered_constants_positive(expanded_expr: sp.Expr) -> list[sp.Float]:
                 """
                 Extract numeric constants in left-to-right order by magnitude only (positive values).
-                Signs are handled by the expression itself.
+                Signs are handled by the expression itself, all values are therefore stored as positive.
                 """
-                expr_str = sp.ccode(expanded_expr)  # sign-safe form for regex scanning
+
+                 # sign-safe form for regex scanning
+                expr_str = sp.ccode(expanded_expr) 
 
                 number_pattern = r'(?<![\w.])([+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?)(?![\w.])'
                 matches = list(re.finditer(number_pattern, expr_str))
@@ -161,6 +132,9 @@ class Solution:
                         dec_abs = abs(dec)
                         dec_str = str(dec_abs.normalize())
                         if '.' in dec_str:
+                        # Check if the decimal part has more than 2 digits - to adrress the complexity, which 
+                        # in this context is defined as the number of digits after the decimal point
+
                             decimal_part = dec_str.split('.')[-1].rstrip('0')
                             is_complex = len(decimal_part) > 2
                         else:
@@ -177,20 +151,18 @@ class Solution:
 
                 return constants_ordered
 
-            
-            # collect_constants(expanded)
             complex_constants = get_ordered_constants_positive(expanded)
-
+            # Rounding consistent with get_ordered_constants_positive function, because later on 
+            # the precise values of the parameters need to match to subsitute b_i symbols instead of them
 
             rounded_expanded = expanded.xreplace({
                 f: sp.Float(f, 12)
                 for f in expanded.atoms(sp.Float)
             })
 
+            # Create replacement pairs for complex constants
             replacement_pairs = [(const, sp.Symbol(f"b{i}")) for i, const in enumerate(complex_constants)]
 
-
-            #expr_with_b = expanded.replace(lambda expr: expr.is_Number, replacer)
             expr_with_b = rounded_expanded.subs(replacement_pairs) 
 
             def clean_latex(expr: sp.Basic) -> str:
@@ -232,12 +204,9 @@ class Solution:
                     b_vals[f"b{i}"] = complex(const.evalf())
             
             self.sympy_expr = expr_with_b
+            self.b_vals = b_vals  # Store the parameter values for later use
             
             return formatted_str, b_vals, expr_with_b
-
-
-
-
 
     def display_expression(self):
         """
@@ -248,7 +217,6 @@ class Solution:
         """
         formatted_expr, b_vals, sympy_expr = self.extract_and_format(self.string_expression)
         return display(Math(sp.latex(sympy_expr)))
-
 
     def plot_results(self, ax=None, train=True):
         """
@@ -263,7 +231,15 @@ class Solution:
         """
         # Get appropriate dataset based on train flag
         x, y = self.problem.train_data if train else self.problem.test_data
-        y_pred = self.regressor.evaluate_model(self.tree, x.reshape(-1, 1))
+
+        # Handle single-dimensional input --> reshape to 2D array. If already 2D, use as is
+        if x.ndim == 1:
+            x_in = x.reshape(-1, 1)
+        else:
+            x_in = x
+
+        y_pred = self.regressor.evaluate_model(self.tree, x_in)
+
 
         # Create new figure if no axes provided
         fig, ax = plt.subplots() if ax is None else (None, ax)
@@ -273,7 +249,6 @@ class Solution:
         ax.set_title(f'{self.name} {"Train" if train else "Test"}')
         ax.legend()
         return ax
-
 
     def plot_residuals(self, ax=None, train=True):
         """
@@ -287,7 +262,14 @@ class Solution:
             matplotlib.axes.Axes: The axes containing the residuals plot.
         """
         x, y = self.problem.train_data if train else self.problem.test_data
-        y_pred = self.regressor.evaluate_model(self.tree, x.reshape(-1, 1))
+
+                # Handle single-dimensional input --> reshape to 2D array. If already 2D, use as is
+        if x.ndim == 1:
+            x_in = x.reshape(-1, 1)
+        else:
+            x_in = x
+
+        y_pred = self.regressor.evaluate_model(self.tree, x_in)
         residuals = y - y_pred
 
         fig, ax = plt.subplots() if ax is None else (None, ax)
@@ -344,11 +326,10 @@ class Solution:
         # Legend and tight layout
         ax.legend(loc='lower right', frameon=True)
         ax.set_ylim(1e-12, 1e3)  # Match y-range in original figure
+        ax.set_xlim(1e-7,1e7)
         ax.grid()
 
         return ax
-
-
 
     def to_latex(self):
         """
@@ -366,7 +347,6 @@ class Solution:
         latex_expr = sp.latex(sympy_expr)
         return latex_expr, b_vals
  
-
     def perform_functional_analysis(self):
         """
         Perform a functional analysis of the solution. Computes the relevant limits, and derivatives
@@ -404,19 +384,9 @@ class Solution:
         expr = sp.sympify(self.string_expression)
         return sp.limit(expr, x, at_value)
     
-
-    
     def __str__(self):
         return (f"{self.name}: expr={self.string_expression}, "
             f"R²={self.r2:.4f}, MSE={self.mse:.4f}, MDL={self.mdl:.2f}")
-    
-
-    
-    
-
-
-
-
 
 
 class Problem:
@@ -439,12 +409,6 @@ class Problem:
     def __init__(self, name, train_data, test_data, args):
         """
         Initialize a Problem instance.
-        
-        Args:
-            name (str): Name identifier for the problem
-            train_data (tuple): Tuple of (X, y) arrays for training
-            test_data (tuple): Tuple of (X, y) arrays for testing
-            args (dict): Dictionary of hyperparameters for the symbolic regressor
         """
         self.name = name
         self.train_data = train_data
@@ -453,7 +417,6 @@ class Problem:
         self.solutions = []
         self.symbolic_regressor = None
         self.solve_state = False
-    
 
     def add_solution(self, solution):
         """
@@ -495,7 +458,6 @@ class Problem:
         
         return ax
   
-    
     def solve(self):
         """
         Solve the symbolic regression problem using the configured parameters.
@@ -508,19 +470,25 @@ class Problem:
         the SymbolicRegressor. Any valid parameter for SymbolicRegressor can be included
         in the args dictionary and it will be passed to the constructor.
         """
+
         # Filter out any None values from args to avoid passing undefined parameters
         valid_args = {k: v for k, v in self.args.items() if v is not None}
-        
+                            #(for k, v) construct k:v --> create the dictionary in this way  
+
         # Initialize SymbolicRegressor with all provided arguments
         reg = SymbolicRegressor(**valid_args)
 
+        # Same condition as for the function solution.plot_results or .plot_residuals, identifying case for 
+        # single-dimensional input and multiple-dimensional input
         if self.train_data[0].ndim == 1:
-            reg.fit(self.train_data[0].reshape(-1, 1), self.train_data[1].ravel())
+            reg.fit(self.train_data[0].reshape(-1, 1), self.train_data[1].ravel())  
         else:
+            print("Training data has multiple dimensions, fitting directly.")
             reg.fit(self.train_data[0], self.train_data[1].ravel())
+
         res = [(s['objective_values'], s['tree'], s['minimum_description_length'], s['mean_squared_error']) for s in reg.pareto_front_]
         
-        #print(reg.pareto_front_[0].keys(), type(reg.pareto_front_[0]))
+        #printing the results in a formatted way
         for obj, expr, mdl, mse in res:
            print(f'{obj}, {mdl:.2f}, {reg.get_model_string(expr, 12)}, {mse:.2f}')
         
@@ -528,6 +496,7 @@ class Problem:
         self.symbolic_regressor = reg
         self.solve_state = True
 
+        # Process the Pareto front solutions and create + store Solution objects
         for idx, s in enumerate(reg.pareto_front_):
             model = s['model']
             tree = s['tree']
@@ -549,10 +518,11 @@ class Problem:
                 regressor=reg,
                 length = length
             )
-            solution.extract_and_format()  # Ensure sympy_expr is set
+            # Ensure sympy_expr is set, the extract_and_format has implemented the logic to set it up and save 
+            # to self.sympy_expr (as well as self.b_vals)
+            solution.extract_and_format()  
 
             self.add_solution(solution)
-
 
     def plot_l_vs_mse(self, ax=None):
         """
@@ -579,8 +549,11 @@ class Problem:
         ax.set_yscale('log')
         ax.set_title(f'{self.name} - Length vs MSE (Pareto Front)')
 
-        return ax
+        # Create a label for each point with its index (starting from 0)
+        for i, (lx, my) in enumerate(zip(lengths, mse)):
+            ax.text(lx, my * 1.4, str(i), fontsize=8, ha='center', va='bottom')
 
+        return ax
 
     def export_solutions_to_latex(self, n, filename="solutions.tex"):
         """
@@ -605,7 +578,7 @@ class Problem:
         body = ""
         for i, sol in enumerate(self.solutions[:n]):
             latex_expr, b_vals = sol.to_latex()
-            body += f"\\subsection*{{Solution {i+1}}}\n"
+            body += f"\\subsection*{{Solution {i}}}\n"
             body += f"\\[\n{latex_expr}\n\\]\n"
 
             if b_vals:
@@ -621,8 +594,6 @@ class Problem:
             f.write(header + body + footer)
 
         print(f"LaTeX file written to {filepath}")
-
-
 
     def __str__(self):
         return f"Problem: {self.name}, Train Data: {self.train_data[0].shape}, Test Data: {self.test_data[0].shape}, Solutions: {len(self.solutions)}, Solve_state: {self.solve_state}"
@@ -674,7 +645,6 @@ class hyper_parameter_search:
 
         return study.best_params
     
-
     def run_search_population_size(self):
         """
         Perform hyperparameter optimization for the population size parameter.
@@ -701,3 +671,386 @@ class hyper_parameter_search:
         return study.best_params
 
 
+class Promising_solution:
+    """
+    A class for handling promising symbolic regression solutions and their subsequent analysis.
+
+    Attributes:
+        expr (sp.Expr): The symbolic expression represented by this instance
+        test_data (tuple): Tuple containing (x_array, y_array) for testing the expression
+        initial_params (dict): Initial parameter values for optimization
+        modified_parameters (dict): To store modified parameters after optimization
+        numerical_expr (sp.Expr): To store the numerical expression after optimization
+        solution (Solution): The original symbolic regression solution associated with this expression
+    """
+    def __init__(self, sympy_expr, test_data, solution, initial_params=None, modified_parameters=None):
+        """
+        Initialize the expression with a sympy expression.
+        
+        Args:
+            expr (sp.Expr): The symbolic expression to handle
+        """
+        self.sympy_expr = sympy_expr
+        self.test_data = test_data  # tuple (x_array, y_array)
+        self.modified_parameters = modified_parameters  # To store modified parameters after optimization
+        self.original_solution = solution
+        self.numerical_expr = None  # To store the numerical expression after optimization
+        
+        # If initial_params not provided, set all to 1
+        if initial_params is None:
+            # Extract parameter names from expression starting with 'b'
+            params = sorted([s.name for s in sympy_expr.free_symbols if s.name.startswith('b')])
+            self.initial_params = {p: 1.0 for p in params}
+        else:
+            self.initial_params = initial_params
+
+    def optimisation(self, initial_conditions: Optional[Dict[str, float]] = None, 
+                 constraints_eq: Optional[List[Dict]] = None) -> Tuple[sp.Expr, Dict[str, float], Dict[str, float]]:
+        """Runs a numerical optimization to fit the model's parameters to data.
+
+        This method uses the 'trust-constr' algorithm to minimize a weighted 
+        mean squared error (MSE) objective function. The objective function is
+        designed to be "defensive," meaning it can handle numerical instabilities
+        (like division by zero or NaN values) by returning a large penalty,
+        allowing the optimizer to continue searching.
+
+        The parameters to be optimized are derived from the keys of the
+        `initial_conditions` dictionary.
+
+        Args:
+            initial_conditions (Optional[Dict[str, float]], optional):
+                A dictionary mapping parameter names (str) to their initial
+                numerical values (float). If None, defaults to `self.initial_params`.
+            constraints_eq (Optional[List[Dict]], optional):
+                A list of constraint dictionaries in the format required by
+                `scipy.optimize.minimize`. Defaults to None.
+
+        Returns:
+            Tuple[sp.Expr, Dict[str, float], Dict[str, float]]: A tuple containing:
+                - sp.Expr: The symbolic expression with the optimized numerical
+                parameters substituted in.
+                - Dict[str, float]: A dictionary of the optimized parameter values,
+                keyed by parameter name (str).
+                - Dict[str, float]: A dictionary of the absolute difference between
+                the initial and optimized parameter values.
+        """
+        # --- SETUP AND VALIDATION ---
+        if self.sympy_expr is None:
+            raise ValueError("No symbolic expression to optimize.")
+
+        # Default to the class's initial parameters if none are provided.
+        if initial_conditions is None:
+            initial_conditions = self.initial_params
+
+        # --- ROBUST SYMBOL AND PARAMETER HANDLING ---
+        # The parameters to optimize are defined by the keys of the initial_conditions dict.
+        # This is the most robust way to prevent KeyErrors and symbol mismatches.
+        sorted_param_names = sorted(initial_conditions.keys())
+        param_syms = [sp.Symbol(name) for name in sorted_param_names]
+
+        # Create the starting vector `b0` directly from the input dictionary.
+        b0 = np.array([initial_conditions[name] for name in sorted_param_names])
+        
+        # Create a callable Python function from the symbolic expression.
+        f_lambdified = sp.lambdify(['X1'] + param_syms, self.sympy_expr, modules='numpy')
+
+        # Unpack test data for use in the objective function.
+        X_data, Y_data = self.test_data
+        X_data = np.array(X_data)
+        Y_data = np.array(Y_data)
+
+        # --- DEFENSIVE OBJECTIVE FUNCTION ---
+        def objective(b_values: np.ndarray) -> float:
+            """
+            Calculates the weighted MSE. Returns a large penalty on numerical error.
+            """
+            try:
+                # Use errstate to treat numpy warnings (like invalid value) as errors.
+                with np.errstate(all='raise'):
+                    y_pred = f_lambdified(X_data, *b_values)
+                    
+                    # Explicitly check for NaNs or Infs which can crash the optimizer.
+                    if not np.all(np.isfinite(y_pred)):
+                        return 1e12 # Return a large penalty
+
+                    # Weighting scheme to penalize errors more heavily at large X values.
+                    weights = (X_data**2 + 1e-8)
+                    sq_error = (y_pred - Y_data) ** 2
+                    return np.mean(weights * sq_error)
+
+            except (FloatingPointError, ValueError, ZeroDivisionError):
+                # If any numerical error occurs, this parameter set is invalid.
+                # Return a large penalty to guide the optimizer away.
+                return 1e12
+
+        # --- RUN OPTIMIZATION ---
+        # Use the 'trust-constr' method, which is robust for complex problems.
+        result = minimize(
+            objective,
+            b0,
+            constraints=constraints_eq,
+            method='trust-constr',
+            options={'maxiter': 2000, 'verbose': 1}
+        )
+
+        if not result.success:
+            print("Optimization did not converge:", result.message)
+
+        # --- PROCESS AND RETURN RESULTS ---
+        # Create a dictionary of optimized parameters with string keys.
+        optimized_params_with_str_keys = {
+            name: val for name, val in zip(sorted_param_names, result.x)
+        }
+        
+        # Create a dictionary for substituting back into the SymPy expression.
+        optimized_subs_with_sym_keys = {
+            sym: val for sym, val in zip(param_syms, result.x)
+        }
+
+        # Update class attributes with the results.
+        self.numerical_expr = self.sympy_expr.subs(optimized_subs_with_sym_keys)
+        self.modified_parameters = optimized_params_with_str_keys
+
+        # Calculate the absolute change for each parameter.
+        abs_diff = {name: abs(result.x[i] - b0[i]) for i, name in enumerate(sorted_param_names)}
+
+        # Print a summary if the helper method exists.
+        if hasattr(self, '_print_summary_table'):
+            self._print_summary_table(param_syms, b0, result.x, abs_diff)
+
+        return self.numerical_expr, self.modified_parameters, abs_diff
+
+    def _print_summary_table(self, param_syms: List[sp.Symbol], old_vals: np.ndarray, 
+                            new_vals: np.ndarray, abs_diff: Dict[str, float]) -> None:
+        """Prints a formatted summary table of the optimization results.
+
+        This is a private helper method used to display a clear, aligned table
+        comparing the initial and final parameter values.
+
+        Args:
+            param_syms (List[sp.Symbol]): The ordered list of sympy.Symbol objects.
+            old_vals (np.ndarray): The initial parameter values before optimization.
+            new_vals (np.ndarray): The final, optimized parameter values.
+            abs_diff (Dict[str, float]): A dictionary mapping parameter names to the
+                                        absolute difference between old and new values.
+        
+        Returns:
+            None
+        """
+        # Prepare all rows for the table, including headers.
+        rows = []
+        rows.append(['Parameter', 'Old Value', 'New Value', 'Abs Difference'])
+        rows.append(['-'*9, '-'*9, '-'*9, '-'*14])
+        for i, p in enumerate(param_syms):
+            rows.append([
+                str(p),
+                f"{old_vals[i]:.6g}",
+                f"{new_vals[i]:.6g}",
+                f"{abs_diff[str(p)]:.6g}"
+            ])
+
+        # Dynamically compute the required width for each column for clean alignment.
+        col_widths = [max(len(row[i]) for row in rows) for i in range(4)]
+
+        # Build the final table string line by line.
+        table_str = ""
+        for row in rows:
+            line = " | ".join(f"{cell:<{col_widths[i]}}" for i, cell in enumerate(row))
+            table_str += line + "\n"
+
+        print("\nOptimization summary:")
+        print(table_str)
+
+    def compute_expansion_at_val(self, at_value, n=2):
+        if self.sympy_expr is None:
+            raise ValueError("No symbolic expression available for evaluation.")
+
+        expr = self.sympy_expr
+        X1 = sp.Symbol('X1', negative=True)
+
+        # Substitute X1 with negative assumption
+        # This ensures that the series expansion is computed correctly
+        # for the negative domain, which is crucial for the hypergeometric function
+        # and other expressions that may have different behavior for negative inputs.
+        # All other symbols are assumed positive.
+        positive_subs = {}
+        for sym in expr.free_symbols:
+            if sym.name == 'X1':
+                # Use X1 with negative assumption
+                positive_subs[sym] = X1
+            else:
+                # All other symbols positive
+                positive_subs[sym] = sp.Symbol(sym.name, positive=True)
+
+        expr_signed = expr.subs(positive_subs)
+
+        return sp.series(expr_signed, X1, at_value, n).removeO()
+
+    def compute_limits(self, at_value):
+        """
+        Compute the limit of the symbolic expression at a given value.
+        
+        Args:
+            at_value (float): The value at which to compute the limit
+            
+        Returns:
+            sp.Expr: The computed limit
+        """
+        x = sp.Symbol('X1')
+        return sp.limit(self.sympy_expr, x, at_value)
+
+    def plot_fractional_error_hypergeom(self, x_val, coeff, ax=None):
+        """
+        Plot the fractional error of the symbolic expression against the hypergeometric function.
+
+        Args:
+            x_val (numpy.ndarray): X values for evaluation (assumed negative values)
+            coeff (tuple/list): Parameters of the hypergeometric function (a, b, c)
+            ax (matplotlib.axes.Axes, optional): The axes to plot on
+
+        Returns:
+            matplotlib.axes.Axes: The axes containing the plot
+        """
+
+        # Theoretical constant for the hypergeometric function, concretely its expansion as x-->inf,
+        # then it behaves like a const_hypergeom times x^(-1/3) for large negative x.
+        const_hypergeom = 1.437283088460994741640842 
+        # Prepare symbolic variable
+        X1 = sp.Symbol('X1')
+
+        # Lambdify symbolic expression for fast evaluation
+        f_lambdified = sp.lambdify(X1, self.numerical_expr, modules='numpy')
+
+        # Evaluate predicted values from symbolic expression at x_val
+        y_pred = f_lambdified(x_val)
+
+        # Evaluate true hypergeometric values
+        y_true = special.hyp2f1(coeff[0], coeff[1], coeff[2], x_val)
+
+        # Compute fractional error (avoid division by zero)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            fractional_error = np.abs((y_true - y_pred) / (y_true + 1e-9))
+            fractional_error = np.nan_to_num(fractional_error, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Create figure and axis if not provided
+        fig, ax = (plt.subplots() if ax is None else (None, ax))
+
+        #Plot fractional error vs absolute x (x assumed negative)
+        ax.plot(np.abs(x_val), fractional_error,
+               label=r'Fractional error vs $_2F_1\left(\frac{1}{3},1,\frac{11}{6};x\right)$',
+               linestyle='--', color='tab:blue')
+
+        # Code for theoretical limiting behavior, if needed
+
+        # limiting_beh = const_hypergeom/(np.abs(x_val)**(1/3))
+        # ax.plot(np.abs(x_val), np.abs(limiting_beh - y_true) / np.abs(y_true),
+        #         label='Limiting behavior', linestyle='-', color='green')
+
+
+        # Log-log scales
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+
+        # Labels and title
+        ax.set_xlabel(r'$-x$')
+        ax.set_ylabel('Fractional Error')
+
+        # Highlight cosmologically relevant range: 1e-7 to 9.0 (red hatch) - This range adopted from Bartlett paper - emulators
+        # for linear power spectrum
+
+        ax.axvspan(1e-7, 9.0, facecolor='none', hatch='////', edgecolor='red',
+                linewidth=0.0, zorder=0, label='Relevant for Cosmology')
+
+        # Highlight training range: 0.016 to 9.0 (grey shaded)
+        ax.axvspan(0.016, 9.0, color='gray', alpha=0.3,
+                label='Training range', zorder=0)
+
+        # Legend, grid, y-limits
+        ax.legend(loc='lower right', frameon=True)
+        ax.set_xlim(1e-7, 1e7)
+        #ax.set_ylim(1e-16, 1e3)
+        ax.grid(True)
+
+        return ax
+  
+    def generate_constraints_from_expansion(self, var=sp.Symbol('X1'), const_target=1, linear_target=sp.Rational(2, 11)):
+        """
+        Generates optimization constraints based on the Taylor series expansion of the model.
+
+        This self-contained version determines the full list of parameters internally
+        from `self.initial_params` to ensure compatibility with the optimizer.
+
+        Args:
+            var (sp.Symbol): The variable to expand around (e.g., X1).
+            const_target (float): The target value for the constant term (c0).
+            linear_target (float): The target value for the linear coefficient (c1).
+
+        Returns:
+            tuple: A tuple containing (list of constraint dicts, const_term_expr, linear_coeff_expr).
+        """
+        if self.sympy_expr is None:
+            raise ValueError("Symbolic expression `self.sympy_expr` must be set first.")
+        if not hasattr(self, 'initial_params'):
+            raise AttributeError("`self.initial_params` dictionary must exist to determine the full parameter list.")
+
+        # 1. Create the full, ordered list of parameter symbols from `self.initial_params`.
+        # This is the crucial step to ensure the list matches the one used in the main
+        # optimization routine, preventing argument count mismatches.
+        sorted_param_names = sorted(self.initial_params.keys())
+        full_param_symbols = [sp.Symbol(name) for name in sorted_param_names]
+
+        # 2. Compute the series expansion around var=0 up to a sufficient order (n=2 for linear term).
+        series_expr = self.sympy_expr.series(var, 0, 2).removeO()
+
+        # 3. Robustly extract the constant and linear coefficients.
+        const_term = series_expr.subs(var, 0)
+        linear_coeff = series_expr.coeff(var, 1)
+
+        # 4. Create the constraint dictionaries for the optimizer.
+        # Use the internally generated `full_param_symbols` in the lambdify call.
+        # This creates a function that accepts all parameters from the optimizer.
+        # constr_target and linear target are theoretically derived to match limiting behaviour
+        # of hypergeometric function around points of interest (0, and in the limit x --> inf)
+        constraints = [
+            {
+                'type': 'eq',
+                'fun': lambda b, expr=const_term: float(sp.lambdify(full_param_symbols, expr)(*b) - const_target)
+            },
+            {
+                'type': 'eq',
+                'fun': lambda b, expr=linear_coeff: float(sp.lambdify(full_param_symbols, expr)(*b) - linear_target)
+            }
+        ]
+
+        return constraints, const_term, linear_coeff
+
+    def log_derivative(self, var=sp.Symbol('X1')):
+        """
+        Compute the symbolic derivative of log(expr) with respect to var.
+        
+        Parameters:
+            expr (sympy.Expr): The expression to differentiate.
+            var (sympy.Symbol): The variable to differentiate with respect to.
+        
+        Returns:
+            sympy.Expr: The symbolic derivative.
+        """
+        return sp.simplify(sp.diff(sp.log(self.sympy_expr), var))
+
+    def compute_expansion_at_infinity(self):
+        """
+        Compute the series expansion of the symbolic expression at infinity.
+        
+        This method computes the series expansion of the symbolic expression
+        at infinity (X1 -> oo) and returns the simplified expression (without other terms).
+        
+        Returns:
+            sp.Expr: The series expansion at infinity.
+        """
+        X1 = sp.Symbol('X1', negative=True)
+        expr = self.sympy_expr.subs({s: X1 for s in self.sympy_expr.free_symbols if s.name == 'X1'})
+
+        # Substitute X1 with 1/X1 and expand around 0, common method to find 
+        # series expansion at infinity (we take just first two orders)
+        expr_subs = expr.subs(X1, 1/X1)
+        return sp.series(expr_subs, X1, 0, 2).removeO()    

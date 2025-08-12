@@ -5,7 +5,7 @@ This package provides tools for performing symbolic regression on mathematical
 functions, with a focus on special functions like hypergeometric functions.
 """
 
-from .main import Problem, Solution
+from .main import Problem, Solution, Promising_solution
 
 __version__ = "0.1.0"
 __author__ = "Daniel C."
