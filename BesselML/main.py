@@ -29,6 +29,69 @@ from typing import Tuple, Dict
 from scipy.optimize import minimize
 
 
+
+def create_arbitrary_constraint(expression_string: str, 
+                            target_value: float, 
+                            full_param_symbols: List[sp.Symbol],
+                            constraint_type: str = 'eq') -> Dict[str, Any]:
+    """Creates a single, correctly formatted and numerically robust constraint.
+
+    This helper function takes a user-defined mathematical expression as a string
+    and converts it into a constraint dictionary. The function it returns is
+    "defensive," meaning it will catch numerical errors (inf/NaN) and return a
+    large penalty, preventing the optimizer from crashing.
+
+    Args:
+        expression_string (str):
+            The mathematical condition, e.g., "b1 + b2" or "b3 / b4".
+        target_value (float):
+            The value the expression should be constrained against.
+        full_param_symbols (List[sp.Symbol]):
+            The complete, ordered list of sympy.Symbol objects being used in the
+            main optimization routine.
+        constraint_type (str, optional):
+            The type of constraint, 'eq' (equality) or 'ineq' (inequality).
+            Defaults to 'eq'.
+
+    Returns:
+        Dict[str, Any]: A constraint dictionary ready for `scipy.optimize.minimize`.
+    """
+    if constraint_type not in ['eq', 'ineq']:
+        raise ValueError("constraint_type must be either 'eq' or 'ineq'.")
+        
+    local_symbol_dict = {str(s): s for s in full_param_symbols}
+    parsed_expr = sp.parse_expr(expression_string, local_dict=local_symbol_dict)
+    constraint_expr = parsed_expr - target_value
+    constraint_lambda = sp.lambdify(full_param_symbols, constraint_expr, 'numpy')
+    
+    # --- DEFENSIVE CONSTRAINT FUNCTION ---
+    # This wrapper function will be the actual constraint passed to the optimizer.
+    def defensive_fun(b_values):
+        try:
+            # Use errstate to treat numpy warnings as errors
+            with np.errstate(all='raise'):
+                # Calculate the constraint violation
+                violation = constraint_lambda(*b_values)
+                
+                # If the result is not a finite number, this region is invalid.
+                if not np.isfinite(violation):
+                    # For constraints, returning a large value indicates a large violation.
+                    return 1e12 
+                
+                return float(violation)
+
+        except (FloatingPointError, ValueError, ZeroDivisionError):
+            # If any numerical error occurs, penalize this parameter set heavily.
+            return 1e12
+
+    # Return the final constraint dictionary with the robust function.
+    return {
+        'type': constraint_type,
+        'fun': defensive_fun
+    }
+
+
+
 class Solution:
     """
     Represents a solution found by symbolic regression.
@@ -331,6 +394,55 @@ class Solution:
 
         return ax
 
+    def plot_fractional_error_bessel(self, x_val, order, kind = 'first', spherical=True, ax=None):
+        """
+        Plot the fractional error of the regression against the Bessel spherical function.
+        
+        This method compares the predicted values against the true Bessel function
+        values and plots the fractional error on a log-log scale.
+        
+        Args:
+            x_val (numpy.ndarray): X values for evaluation
+            ax (matplotlib.axes.Axes, optional): The axes to plot on
+            
+        Returns:
+            matplotlib.axes.Axes: The axes containing the plot
+        """
+        # Calculate predicted and true values
+        y_pred = self.regressor.evaluate_model(self.tree, x_val.reshape(-1, 1))
+        
+        if kind == 'second' and spherical == False:
+            y = special.yv(order, x_val)
+        elif kind == 'second' and spherical == True:
+            y = special.spherical_yn(order, x_val)
+        elif kind == 'first' and spherical == True:
+            y = special.spherical_jn(order, x_val)
+            print(f"spherical bessel function of first kind of order {order}")
+        else:
+            y = special.jv(order, x_val)
+
+        # Calculate fractional error
+        fractional_error = np.abs((y - y_pred) / y)
+
+        fig, ax = plt.subplots() if ax is None else (None, ax)
+        ax.plot(abs(x_val), fractional_error, linestyle='--', color='tab:blue')
+
+        # Log-log scale
+        # ax.set_xscale('log')
+        ax.set_yscale('log')
+
+        # Axes labels and title
+        ax.set_xlabel(r'$-x$')
+        ax.set_ylabel('Fractional Error')
+
+
+        # Legend and tight layout
+        #ax.set_ylim(1e-12, 1e3)  # Match y-range in original figure
+        #ax.set_xlim(1e-7,1e7)
+        ax.grid()
+
+        return ax
+    
     def to_latex(self):
         """
         Convert the solution's expression to LaTeX format.
@@ -383,7 +495,86 @@ class Solution:
         x = sp.Symbol('X1')
         expr = sp.sympify(self.string_expression)
         return sp.limit(expr, x, at_value)
-    
+
+    def int_analysis_and_modification(self, threshold: float = 0.1):
+        """
+        Analyzes the solution's parameters to perform 'smart rounding' and
+        creates a new, re-optimized PromisingSolution if simplification is possible.
+
+        This is a corrected and refined version of your provided function.
+        """
+        x_data, y_data = self.problem.test_data
+        param_names = sorted(self.b_vals.keys()) # Use a sorted list for consistent order
+
+        # Create a single, reusable numerical function from the expression
+        f_lambdified = sp.lambdify(['X1'] + [sp.Symbol(name) for name in param_names], self.sympy_expr, modules='numpy')
+
+        def objective_mse(b_values: np.ndarray) -> float:
+            """Generic MSE objective function that takes a NumPy array."""
+            return np.mean((y_data - f_lambdified(x_data, *b_values))**2)
+
+        # --- Step 1: Establish the Baseline ---
+        # The baseline is the best possible MSE with the full float model.
+        # We assume self.b_vals contains the optimal float values.
+        # If not, you would run minimize() here first.
+        params_best_float = np.array([self.b_vals[name] for name in param_names])
+        baseline_mse = objective_mse(params_best_float)
+
+        # --- Step 2: Calculate the Cost of Rounding for Each Parameter ---
+        substite_param = {} # Params that will be rounded
+        b_vals_new = {}     # Params that will remain floats
+
+        for i, name in enumerate(param_names):
+            # Create a fresh copy of the optimal params for this test
+            params_hybrid = np.copy(params_best_float)
+            param_int = round(params_hybrid[i])
+            params_hybrid[i] = param_int # Modify only the parameter being tested
+
+            mse_hybrid = objective_mse(params_hybrid)
+            
+            # Calculate the penalty relative to our consistent baseline
+            penalisation = (mse_hybrid - baseline_mse) / baseline_mse if baseline_mse > 1e-16 else float('inf')
+
+            if penalisation < threshold:
+                substite_param[name] = param_int
+            else:
+                b_vals_new[name] = self.b_vals[name]
+        
+        # --- Step 3: Create and Re-optimize a New Solution ---
+        if not substite_param: # Check if the dictionary is empty
+            print("  - No parameters met the rounding criteria. Keeping full float model.")
+            return None # Return nothing if no changes were made
+ 
+        print(f"  - Rounding parameters: {list(substite_param.keys())}")
+        
+        # Create the new expression with the integer values substituted in
+        expression_w_int = self.sympy_expr.subs(substite_param)
+        
+        # Create the new solution object. The initial parameters for its optimization
+        # will be only the ones that remained floats.
+        Solution_w_integers = Promising_solution(
+            expression_w_int,
+            (x_data, y_data),
+            self,
+            initial_parameters=b_vals_new
+        )
+        
+        print(f'Creating a new Promising solution: {Solution_w_integers.sympy_expr}')
+        
+        if b_vals_new:
+            print(f'Re-optimizing the remaining float parameters: {list(b_vals_new.keys())}')
+
+            # This assumes your Promising_solution class has a method to run optimization.
+            # The optimization will now only work on the parameters defined in `b_vals_new`.
+            Solution_w_integers.run_multiple_optimisations(
+                n_runs=100,
+                k_confirm=2,
+                scatter_fraction=0.1,
+                cluster_tolerance=1e-6
+            )
+            
+        return Solution_w_integers
+
     def __str__(self):
         return (f"{self.name}: expr={self.string_expression}, "
             f"R²={self.r2:.4f}, MSE={self.mse:.4f}, MDL={self.mdl:.2f}")
@@ -683,26 +874,45 @@ class Promising_solution:
         numerical_expr (sp.Expr): To store the numerical expression after optimization
         solution (Solution): The original symbolic regression solution associated with this expression
     """
-    def __init__(self, sympy_expr, test_data, solution, initial_params=None, modified_parameters=None):
+    def __init__(self, sympy_expr, test_data, solution, initial_parameters):
         """
         Initialize the expression with a sympy expression.
-        
-        Args:
-            expr (sp.Expr): The symbolic expression to handle
         """
+                # --- Store core components ---
         self.sympy_expr = sympy_expr
-        self.test_data = test_data  # tuple (x_array, y_array)
-        self.modified_parameters = modified_parameters  # To store modified parameters after optimization
+        self.test_data = test_data
         self.original_solution = solution
         self.numerical_expr = None  # To store the numerical expression after optimization
-        
-        # If initial_params not provided, set all to 1
-        if initial_params is None:
+
+        # --- Handle default parameter creation ---
+        # Use a new variable to avoid the UnboundLocalError from shadowing the argument.
+        params_to_process = initial_parameters
+
+        # If no initial parameters are provided, create a default set.
+        if params_to_process is None:
+            print("No initial_parameters provided. Defaulting 'b*' params in expression to 1.0.")
             # Extract parameter names from expression starting with 'b'
-            params = sorted([s.name for s in sympy_expr.free_symbols if s.name.startswith('b')])
-            self.initial_params = {p: 1.0 for p in params}
-        else:
-            self.initial_params = initial_params
+            params_in_expr = [s.name for s in sympy_expr.free_symbols if s.name.startswith('b')]
+            params_to_process = {p: 1.0 for p in params_in_expr}
+        
+        # --- SELF-CORRECTING PARAMETER LOGIC ---
+        
+        # 1. Get the set of all variable names (as strings) from the new expression.
+        # We explicitly ignore 'X1' as it's the independent variable, not a parameter.
+        symbols_in_expr = {str(s) for s in sympy_expr.free_symbols if str(s) != 'X1'}
+
+        # 2. Filter the incoming parameter dictionary.
+        # This ensures the parameters are always in sync with the expression.
+        filtered_params = {
+            key: value for key, value in params_to_process.items()
+            if key in symbols_in_expr
+        }
+
+        # 3. Store the clean, filtered dictionary as the definitive set of parameters.
+        # Your `optimisation` function should use this attribute.
+        self.initial_params = filtered_params
+        # Initialize modified_parameters with the same clean set. It will be updated by the optimizer.
+        self.modified_parameters = filtered_params.copy() 
 
     def optimisation(self, initial_conditions: Optional[Dict[str, float]] = None, 
                  constraints_eq: Optional[List[Dict]] = None) -> Tuple[sp.Expr, Dict[str, float], Dict[str, float]]:
@@ -790,7 +1000,7 @@ class Promising_solution:
             b0,
             constraints=constraints_eq,
             method='trust-constr',
-            options={'maxiter': 2000, 'verbose': 1}
+            options={'maxiter': 10000, 'verbose': 1}
         )
 
         if not result.success:
@@ -818,7 +1028,133 @@ class Promising_solution:
         if hasattr(self, '_print_summary_table'):
             self._print_summary_table(param_syms, b0, result.x, abs_diff)
 
-        return self.numerical_expr, self.modified_parameters, abs_diff
+        return self.numerical_expr, self.modified_parameters, abs_diff, result.fun
+
+    def run_multiple_optimisations(
+    self,
+    n_runs: int = 20,
+    k_confirm: int = 3,
+    scatter_fraction: float = 0.1,
+    cluster_tolerance: float = 1e-7,
+    initial_conditions: Optional[Dict[str, float]] = None,
+    constraints_eq: Optional[List[Dict]] = None
+    ) -> Tuple[sp.Expr, Dict[str, float]]:
+        """
+        Performs multi-start optimization to find a robust set of parameters.
+
+        This method addresses the sensitivity of optimization to initial conditions by
+        running the optimizer multiple times from different, randomly scattered starting
+        points. It then clusters the results and returns the solution from the most
+        stable cluster that has the best objective score (lowest MSE).
+
+        Args:
+            n_runs (int): The total number of optimization runs to perform.
+            k_confirm (int): The minimum number of results required in a cluster for
+                it to be considered a stable, "confirmed" solution.
+            scatter_fraction (float): The relative range (e.g., 0.1 for 10%) used
+                to randomly scatter the initial parameter values for each run.
+            cluster_tolerance (float): The relative tolerance used to determine if
+                two sets of parameters are close enough to belong to the same cluster.
+            initial_conditions (Optional[Dict[str, float]]): The central set of
+                initial parameters to scatter from. Defaults to `self.initial_params`.
+            constraints_eq (Optional[List[Dict]]): Constraints to be applied to all
+                optimization runs.
+
+        Returns:
+            Tuple[sp.Expr, Dict[str, float]]: A tuple containing:
+                - sp.Expr: The symbolic expression with the confirmed best parameters.
+                - Dict[str, float]: The dictionary of the confirmed best parameters.
+
+        Raises:
+            RuntimeError: If no stable cluster of solutions can be found after all runs.
+        """
+        if initial_conditions is None:
+            initial_conditions = self.initial_params
+
+        all_results = []
+        print(f"--- Starting Multi-Start Optimization ({n_runs} runs) ---")
+
+        for i in range(n_runs):
+            print(f"  Running optimization {i+1}/{n_runs}...")
+            
+            # Generate a new set of scattered initial conditions
+            scattered_initials = {}
+            for name, value in initial_conditions.items():
+                # Avoid scattering zero or very small numbers in a multiplicative way
+                if abs(value) < 1e-9:
+                    scattered_initials[name] = value + (np.random.rand() - 0.5) * 2 * scatter_fraction
+                else:
+                    scattered_initials[name] = value * (1 + (np.random.rand() - 0.5) * 2 * scatter_fraction)
+
+            try:
+                # Call the (modified) single optimization function
+                num_expr, opt_params, _, mse = self.optimisation(
+                    initial_conditions=scattered_initials,
+                    constraints_eq=constraints_eq
+                )
+                all_results.append({'params': opt_params, 'mse': mse, 'expr': num_expr})
+            except Exception as e:
+                print(f"    - Run {i+1} failed with an unexpected error: {e}")
+
+        if not all_results:
+            raise RuntimeError("All optimization runs failed. Unable to find a solution.")
+
+        # --- Cluster the results to find stable solutions ---
+        # Convert parameter dicts to sorted numpy arrays for reliable comparison
+        for res in all_results:
+            sorted_keys = sorted(res['params'].keys())
+            res['params_array'] = np.array([res['params'][k] for k in sorted_keys])
+        
+        clusters = []
+        for result in all_results:
+            # Skip results with very high MSE (likely failed runs)
+            if result['mse'] >= 1e10:
+                continue
+                
+            found_cluster = False
+            for cluster in clusters:
+                # Check if this result is close to the representative of an existing cluster
+                if np.allclose(result['params_array'], cluster[0]['params_array'], rtol=cluster_tolerance):
+                    cluster.append(result)
+                    found_cluster = True
+                    break
+            
+            if not found_cluster:
+                # Create a new cluster
+                clusters.append([result])
+
+        # --- Find the best result from the most stable clusters ---
+        # Filter for clusters that meet the confirmation threshold `k_confirm`
+        confirmed_clusters = [c for c in clusters if len(c) >= k_confirm]
+
+        if not confirmed_clusters:
+            raise RuntimeError(
+                f"Optimization inconclusive. No stable parameter set was found {k_confirm} or more times."
+            )
+
+        # From the confirmed clusters, find the one containing the overall best solution (lowest MSE)
+        best_overall_result = None
+        best_mse = float('inf')
+
+        for cluster in confirmed_clusters:
+            # Find the best result within this cluster
+            best_in_cluster = min(cluster, key=lambda x: x['mse'])
+            if best_in_cluster['mse'] < best_mse:
+                best_mse = best_in_cluster['mse']
+                best_overall_result = best_in_cluster
+
+        print("\n--- Multi-Start Optimization Summary ---")
+        print(f"Found {len(confirmed_clusters)} stable cluster(s) with at least {k_confirm} members.")
+        print(f"Best solution found with MSE = {best_overall_result['mse']:.6g}")
+        print("Confirmed parameters:")
+        for name, val in best_overall_result['params'].items():
+            print(f"  {name}: {val}")
+
+        # Update class attributes with the best confirmed result
+        self.numerical_expr = best_overall_result['expr']
+        self.modified_parameters = best_overall_result['params']
+
+        return self.numerical_expr, self.modified_parameters
 
     def _print_summary_table(self, param_syms: List[sp.Symbol], old_vals: np.ndarray, 
                             new_vals: np.ndarray, abs_diff: Dict[str, float]) -> None:
@@ -898,7 +1234,39 @@ class Promising_solution:
         """
         x = sp.Symbol('X1')
         return sp.limit(self.sympy_expr, x, at_value)
+    
+    def plot_comparison(self, ax=None, train=True):
+        """
+        Plot the regression results against true values.
+        
+        Args:
+            ax (matplotlib.axes.Axes, optional): The axes to plot on. If None, creates new figure.
+            train (bool): If True, plots training data, otherwise test data.
+            
+        Returns:
+            matplotlib.axes.Axes: The axes containing the plot.
+        """
+        # Get appropriate dataset based on train flag
+        x, y = self.test_data
 
+                # Calculate predicted and true values 
+        X1 = sp.Symbol('X1')
+
+        # Lambdify symbolic expression for fast evaluation
+        f_lambdified = sp.lambdify(X1, self.numerical_expr, modules='numpy')
+
+        # Evaluate predicted values from symbolic expression at x_val
+        y_pred = f_lambdified(x)
+        
+
+
+        # Create new figure if no axes provided
+        fig, ax = plt.subplots() if ax is None else (None, ax)
+        ax.plot(x, y,  label = 'ground truth', color='black')
+        ax.plot(x, y_pred, label='prediction of solution', linestyle='--')
+        ax.legend()
+        return ax
+    
     def plot_fractional_error_hypergeom(self, x_val, coeff, ax=None):
         """
         Plot the fractional error of the symbolic expression against the hypergeometric function.
@@ -967,12 +1335,67 @@ class Promising_solution:
 
         # Legend, grid, y-limits
         ax.legend(loc='lower right', frameon=True)
-        ax.set_xlim(1e-7, 1e7)
-        #ax.set_ylim(1e-16, 1e3)
+        #ax.set_xlim(1e-7, 1e7)
+        ax.set_ylim(1e-16, 1e-1)
         ax.grid(True)
 
         return ax
-  
+
+    def plot_fractional_error_bessel(self, x_val, order, kind = 'first', spherical=True, ax=None):
+        """
+        Plot the fractional error of the regression against the Bessel spherical function.
+        
+        This method compares the predicted values against the true Bessel function
+        values and plots the fractional error on a log-log scale.
+        
+        Args:
+            x_val (numpy.ndarray): X values for evaluation
+            ax (matplotlib.axes.Axes, optional): The axes to plot on
+            
+        Returns:
+            matplotlib.axes.Axes: The axes containing the plot
+        """
+        # Calculate predicted and true values
+        X1 = sp.Symbol('X1')
+
+        # Lambdify symbolic expression for fast evaluation
+        f_lambdified = sp.lambdify(X1, self.numerical_expr, modules='numpy')
+
+        # Evaluate predicted values from symbolic expression at x_val
+        y_pred = f_lambdified(x_val)
+        
+        if kind == 'second' and spherical == False:
+            y = special.yv(order, x_val)
+        elif kind == 'second' and spherical == True:
+            y = special.spherical_yn(order, x_val)
+        elif kind == 'first' and spherical == True:
+            y = special.spherical_jn(order, x_val)
+            print(f"spherical bessel function of first kind of order {order}")
+        else:
+            y = special.jv(order, x_val)
+
+        # Calculate fractional error
+        fractional_error = np.abs((y - y_pred) / y)
+
+        fig, ax = plt.subplots() if ax is None else (None, ax)
+        ax.plot(abs(x_val), fractional_error, linestyle='--', color='tab:blue')
+
+        # Log-log scale
+        # ax.set_xscale('log')
+        ax.set_yscale('log')
+
+        # Axes labels and title
+        ax.set_xlabel(r'$-x$')
+        ax.set_ylabel('Fractional Error')
+
+
+        # Legend and tight layout
+        #ax.set_ylim(1e-12, 1e3)  # Match y-range in original figure
+        #ax.set_xlim(1e-7,1e7)
+        ax.grid()
+
+        return ax
+      
     def generate_constraints_from_expansion(self, var=sp.Symbol('X1'), const_target=1, linear_target=sp.Rational(2, 11)):
         """
         Generates optimization constraints based on the Taylor series expansion of the model.
@@ -1054,3 +1477,243 @@ class Promising_solution:
         # series expansion at infinity (we take just first two orders)
         expr_subs = expr.subs(X1, 1/X1)
         return sp.series(expr_subs, X1, 0, 2).removeO()    
+
+    def int_analysis_and_modification(self, threshold: float = 0.01, abs_mse_tol: float = 1e-18):
+        """
+        Analyzes the solution's parameters to perform 'smart rounding' and
+        creates a new, re-optimized PromisingSolution if simplification is possible.
+
+        This version automatically detects which parameters are present in the
+        expression and only analyzes them.
+        """
+        # --- Setup: Identify Active Parameters ---
+        x_data, y_data = self.original_solution.problem.test_data
+        
+        # Automatically detect which parameters are actually in the expression
+        all_symbols_in_expr = self.sympy_expr.free_symbols
+        all_param_names = self.modified_parameters.keys()
+        
+        active_param_symbols = [s for s in all_symbols_in_expr if s.name in all_param_names]
+        active_param_names = sorted([s.name for s in active_param_symbols])
+
+        if not active_param_names:
+            print("  - No optimizable parameters found in the expression. No changes made.")
+            return None
+
+        print(f"  - Found active parameters in expression: {active_param_names}")
+
+        # Create a single, reusable numerical function from the expression
+        f_lambdified = sp.lambdify(['X1'] + active_param_symbols, self.sympy_expr, modules='numpy')
+
+        def objective_mse(b_values: np.ndarray) -> float:
+            """Generic MSE objective function that takes a NumPy array."""
+            return np.mean((y_data - f_lambdified(x_data, *b_values))**2)
+
+        # --- Step 1: Establish the Baseline ---
+        # The baseline is the best possible MSE with the full float model.
+        params_best_float = np.array([self.modified_parameters[name] for name in active_param_names])
+        baseline_mse = objective_mse(params_best_float)
+        print(baseline_mse)
+
+        # --- Step 2: Calculate the Cost of Rounding for Each Parameter ---
+        substite_param = {} # Params that will be rounded
+        b_vals_new = {}     # Params that will remain floats
+
+        for i, name in enumerate(active_param_names):
+            # Create a fresh copy of the optimal params for this test
+            params_hybrid = np.copy(params_best_float)
+            param_int = round(params_hybrid[i])
+            params_hybrid[i] = param_int # Modify only the parameter being tested
+
+            mse_hybrid = objective_mse(params_hybrid)
+            
+            absolute_increase = abs(mse_hybrid - baseline_mse)
+            relative_increase = absolute_increase / baseline_mse if baseline_mse > 1e-22 else float('inf')
+
+            print(f"  - Testing '{name}': Rel cost = {relative_increase}, {mse_hybrid}")
+        
+
+            if relative_increase < threshold or absolute_increase < abs_mse_tol:
+                substite_param[name] = param_int
+            else:
+                b_vals_new[name] = self.modified_parameters[name]
+        
+        # --- Step 3: Create and Re-optimize a New Solution ---
+        if not substite_param: # Check if the dictionary is empty
+            print("  - No parameters met the rounding criteria. Keeping full float model.")
+            return None # Return nothing if no changes were made
+
+        print(f"  - Rounding parameters: {list(substite_param.keys())}")
+        
+        # Create the new expression with the integer values substituted in
+        expression_w_int = self.sympy_expr.subs(substite_param)
+        
+        # Create the new solution object. The initial parameters for its optimization
+        # will be only the ones that remained floats.
+        Solution_w_integers = Promising_solution(
+            expression_w_int,
+            (x_data, y_data),
+            self,
+            initial_parameters=b_vals_new
+        )
+        
+        print(f'Creating a new Promising solution: {Solution_w_integers.sympy_expr}')
+        
+        if b_vals_new:
+            print(f'Re-optimizing the remaining float parameters: {list(b_vals_new.keys())}')
+
+            # This assumes your Promising_solution class has a method to run optimization.
+            # The optimization will now only work on the parameters defined in `b_vals_new`.
+            Solution_w_integers.run_multiple_optimisations(
+                n_runs=100,
+                k_confirm=3,
+                scatter_fraction=0.1,
+                cluster_tolerance=1e-6
+            )
+        else:
+            print("  - All parameters were rounded. No re-optimization needed.")
+            
+        return Solution_w_integers
+
+    def int_analysis_and_modification_iterative_optimisation(self, threshold: float = 0.01, abs_mse_tol: float = 1e-18):
+        """
+        Analyzes the solution's parameters to perform 'smart rounding' and
+        creates a new, re-optimized PromisingSolution if simplification is possible.
+
+        This version uses a robust "iterative refinement" strategy. At each step,
+        it rounds the single cheapest parameter and then re-optimizes the others
+        before deciding whether to accept the change.
+        """
+        # --- Setup: Identify Active Parameters ---
+        x_data, y_data = self.original_solution.problem.test_data
+        all_symbols_in_expr = self.sympy_expr.free_symbols
+        all_param_names = self.modified_parameters.keys()
+        active_param_symbols = [s for s in all_symbols_in_expr if s.name in all_param_names]
+        active_param_names = sorted([s.name for s in active_param_symbols])
+
+        if not active_param_names:
+            print("  - No optimizable parameters found in the expression. No changes made.")
+            return None
+
+        print(f"  - Found active parameters in expression: {active_param_names}")
+        f_lambdified = sp.lambdify(['X1'] + active_param_symbols, self.sympy_expr, modules='numpy')
+
+        def objective_mse(b_values: np.ndarray) -> float:
+            return np.mean((y_data - f_lambdified(x_data, *b_values))**2)
+
+        # --- Step 1: Establish the Baseline ---
+        params_best_float = np.array([self.modified_parameters[name] for name in active_param_names])
+        baseline_mse = objective_mse(params_best_float)
+        print(f"  - Baseline Best MSE: {baseline_mse:.6e}")
+
+        # --- Step 2: Iterative Refinement Loop ---
+        print("\n--- Starting Iterative Refinement Process ---")
+        
+        # Keep track of which parameters are floats and which are fixed as ints
+        current_float_params = {name: val for name, val in zip(active_param_names, params_best_float)}
+        final_int_params = {}
+        
+        # This will be updated after each successful rounding step
+        current_best_mse = baseline_mse
+
+        while True:
+            if not current_float_params:
+                print("\n  - All parameters have been rounded.")
+                break
+
+            # Find the cost of rounding each of the *remaining* float parameters
+            costs = []
+            for name_to_test in current_float_params.keys():
+                # The other floats that need re-optimizing
+                params_to_reopt_names = [name for name in current_float_params.keys() if name != name_to_test]
+
+                # If there are other floats, re-optimize them to see the true cost
+                if params_to_reopt_names:
+                    def reduced_objective(free_vals):
+                        b_values = []
+                        free_vals_iter = iter(free_vals)
+                        # Build the full parameter array for the objective function
+                        for name in active_param_names:
+                            if name == name_to_test:
+                                b_values.append(round(current_float_params[name]))
+                            elif name in final_int_params:
+                                b_values.append(final_int_params[name])
+                            else: # It's a float to be optimized
+                                b_values.append(next(free_vals_iter))
+                        return objective_mse(np.array(b_values))
+
+                    initial_guess_reduced = [current_float_params[name] for name in params_to_reopt_names]
+                    res = minimize(reduced_objective, x0=initial_guess_reduced, method='L-BFGS-B')
+                    cost_mse = res.fun
+                else: # This is the last float parameter, no re-optimization needed
+                    b_values_list = []
+                    for name in active_param_names:
+                        if name == name_to_test:
+                            b_values_list.append(round(current_float_params[name]))
+                        else:
+                            b_values_list.append(final_int_params[name])
+                    cost_mse = objective_mse(np.array(b_values_list))
+
+                costs.append({'name': name_to_test, 'cost_mse': cost_mse})
+
+            # Find the cheapest parameter to round in this iteration
+            if not costs: break # Should not happen, but as a safeguard
+            cheapest_param = min(costs, key=lambda x: x['cost_mse'])
+            name_to_round = cheapest_param['name']
+            new_mse = cheapest_param['cost_mse']
+            
+            # *** CORRECTED LOGIC V3: Properly define cost and handle improvements ***
+            increase = new_mse - current_best_mse
+            
+            # The cost is the increase in error. If error decreases, cost is 0.
+            cost = max(0, increase)
+            relative_cost = cost / current_best_mse if current_best_mse > 1e-22 else float('inf')
+            
+            print(f"\n  - Cheapest candidate to round is '{name_to_round}'.")
+            print(f"    - If rounded, new MSE would be {new_mse:.6e} (Abs change: {increase:.6e}, Rel cost: {relative_cost:.2%})")
+
+            # Check if this cheapest move is acceptable. Any improvement (increase <= 0) is acceptable.
+            if increase <= 0 or relative_cost < threshold or abs(increase) < abs_mse_tol:
+                print(f"    - Cost is acceptable. Locking in '{name_to_round}' as an integer.")
+                # Lock it in: move from float dict to int dict
+                final_int_params[name_to_round] = round(current_float_params[name_to_round])
+                del current_float_params[name_to_round]
+                # Update the baseline for the next iteration
+                current_best_mse = new_mse
+            else:
+                print("    - Cost of cheapest move exceeds threshold. Stopping refinement.")
+                break # The best move is too expensive, so we stop
+
+        # --- Step 3: Create and Finalize the New Solution ---
+        if not final_int_params:
+            print("\n  - No parameters met the rounding criteria. Keeping full float model.")
+            return None
+
+        print(f"\n  - Final parameters to be rounded: {list(final_int_params.keys())}")
+        
+        expression_w_int = self.sympy_expr.subs(final_int_params)
+        
+        # The remaining floats are in current_float_params
+        b_vals_new = current_float_params
+        
+        Solution_w_integers = Promising_solution(
+            expression_w_int,
+            (x_data, y_data),
+            self,
+            initial_parameters=b_vals_new
+        )
+        
+        print(f'Creating a new Promising solution: {Solution_w_integers.sympy_expr}')
+        
+        if b_vals_new:
+            print(f'Re-optimizing the final float parameters: {list(b_vals_new.keys())}')
+            Solution_w_integers.run_multiple_optimisations(
+                n_runs=100,
+                k_confirm=2,
+                scatter_fraction=0.1,
+                cluster_tolerance=1e-6
+            )
+        else:
+            print("  - All parameters were rounded. No final re-optimization needed.")
+            
+        return Solution_w_integers
