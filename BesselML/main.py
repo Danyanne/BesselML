@@ -8,7 +8,7 @@ results through various visualization methods. Provides additional functions for
 reoptimization of symbolic expressions.
 
 
-Done by Daniel C. Summer 2025 at Oxford University, UK.
+Created by Daniel C. in Summer 2025 at Oxford University, UK.
 """
 
 
@@ -27,8 +27,9 @@ import os
 import re
 from typing import Tuple, Dict
 from scipy.optimize import minimize
-
-
+from scipy.stats import binned_statistic
+import pandas as pd
+from scipy.special import gamma, factorial
 
 def create_arbitrary_constraint(expression_string: str, 
                             target_value: float, 
@@ -281,7 +282,7 @@ class Solution:
         formatted_expr, b_vals, sympy_expr = self.extract_and_format(self.string_expression)
         return display(Math(sp.latex(sympy_expr)))
 
-    def plot_results(self, ax=None, train=True):
+    def plot_results(self, x_data=None, y_data=None, ax=None, train=True):
         """
         Plot the regression results against true values.
         
@@ -293,7 +294,11 @@ class Solution:
             matplotlib.axes.Axes: The axes containing the plot.
         """
         # Get appropriate dataset based on train flag
-        x, y = self.problem.train_data if train else self.problem.test_data
+        if x_data is not None:
+            x = x_data
+            y = y_data
+        else:
+            x, y = self.problem.train_data if train else self.problem.test_data
 
         # Handle single-dimensional input --> reshape to 2D array. If already 2D, use as is
         if x.ndim == 1:
@@ -428,11 +433,11 @@ class Solution:
         ax.plot(abs(x_val), fractional_error, linestyle='--', color='tab:blue')
 
         # Log-log scale
-        # ax.set_xscale('log')
+        #ax.set_xscale('log')
         ax.set_yscale('log')
 
         # Axes labels and title
-        ax.set_xlabel(r'$-x$')
+        ax.set_xlabel(r'$x$')
         ax.set_ylabel('Fractional Error')
 
 
@@ -567,12 +572,11 @@ class Solution:
             # This assumes your Promising_solution class has a method to run optimization.
             # The optimization will now only work on the parameters defined in `b_vals_new`.
             Solution_w_integers.run_multiple_optimisations(
-                n_runs=100,
-                k_confirm=2,
-                scatter_fraction=0.1,
-                cluster_tolerance=1e-6
-            )
-            
+                n_runs=150,
+                k_confirm=3,
+                scatter_fraction=0.05,
+                cluster_tolerance=1e-3
+            )          
         return Solution_w_integers
 
     def __str__(self):
@@ -682,8 +686,7 @@ class Problem:
         #printing the results in a formatted way
         for obj, expr, mdl, mse in res:
            print(f'{obj}, {mdl:.2f}, {reg.get_model_string(expr, 12)}, {mse:.2f}')
-        
-          
+
         self.symbolic_regressor = reg
         self.solve_state = True
 
@@ -1235,7 +1238,7 @@ class Promising_solution:
         x = sp.Symbol('X1')
         return sp.limit(self.sympy_expr, x, at_value)
     
-    def plot_comparison(self, ax=None, train=True):
+    def plot_comparison(self, x_data=None, y_data=None, ax=None):
         """
         Plot the regression results against true values.
         
@@ -1246,9 +1249,15 @@ class Promising_solution:
         Returns:
             matplotlib.axes.Axes: The axes containing the plot.
         """
+        if x_data is None and y_data is None:
         # Get appropriate dataset based on train flag
-        x, y = self.test_data
-
+            x, y = self.test_data
+        elif x_data is not None and y_data is not None:
+            x = x_data
+            y = y_data
+        else:
+            print("Provide both x and y")
+        
                 # Calculate predicted and true values 
         X1 = sp.Symbol('X1')
 
@@ -1395,7 +1404,208 @@ class Promising_solution:
         ax.grid()
 
         return ax
-      
+    
+    def plot_fractional_error_bessel_w_smoothing(self, x_val, order, kind='first', spherical=True, ax=None, 
+                                     smoothing=None, window_size=50, num_bins=40):
+        """
+        Plot the fractional error of the regression against the Bessel spherical function.
+        
+        This method compares the predicted values against the true Bessel function
+        values and plots the fractional error on a log scale. It can also plot a 
+        smoothed version of the error.
+        
+        Args:
+            x_val (numpy.ndarray): X values for evaluation.
+            order (int): The order of the Bessel function.
+            kind (str): 'first' or 'second' kind of Bessel function.
+            spherical (bool): Whether to use the spherical Bessel function.
+            ax (matplotlib.axes.Axes, optional): The axes to plot on.
+            smoothing (str, optional): The smoothing method to apply. 
+                                    Options: 'rolling' for moving average, 
+                                    'binned' for binned average. Default is None.
+            window_size (int): The window size for the 'rolling' moving average.
+            num_bins (int): The number of bins for the 'binned' average.
+            
+        Returns:
+            matplotlib.axes.Axes: The axes containing the plot.
+        """
+        # Ensure x_val is sorted for correct smoothing
+        sort_indices = np.argsort(x_val)
+        x_val = x_val[sort_indices]
+
+        # Calculate predicted and true values
+        X1 = sp.Symbol('X1')
+        f_lambdified = sp.lambdify(X1, self.numerical_expr, modules='numpy')
+        y_pred = f_lambdified(x_val)
+        
+        if kind == 'second' and spherical == False:
+            y_true = special.yv(order, x_val)
+        elif kind == 'second' and spherical == True:
+            y_true = special.spherical_yn(order, x_val)
+        elif kind == 'first' and spherical == True:
+            y_true = special.spherical_jn(order, x_val)
+        else:
+            y_true = special.jv(order, x_val)
+
+        # Calculate fractional error, avoiding division by zero
+        # Add a small epsilon where y_true is close to zero
+        epsilon = 1e-30
+        fractional_error = np.abs((y_true - y_pred) / (y_true + epsilon))
+
+        fig, ax = plt.subplots(figsize=(10, 6)) if ax is None else (ax.figure, ax)
+        
+        # Plot the raw, oscillating error with reduced visibility
+        ax.plot(x_val, fractional_error, linestyle='--', color='tab:blue', alpha=0.6, label='Raw Error')
+
+        # --- NEW: SMOOTHING SECTION ---
+        if smoothing == 'rolling':
+            # Option 1: Moving Average using pandas (robust and easy)
+            s = pd.Series(fractional_error)
+            smoothed_error = s.rolling(window=window_size, center=True).mean()
+            ax.plot(x_val, smoothed_error, color='tab:red', label=f'Moving Average (window={window_size})')
+        
+        elif smoothing == 'binned':
+            # Option 2: Binning the data and averaging within bins
+            bin_means, bin_edges, _ = binned_statistic(x_val, fractional_error, statistic='mean', bins=num_bins)
+            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+            ax.plot(bin_centers, bin_means, color='tab:green', marker='o', linestyle='-', label=f'Binned Average (bins={num_bins})')
+        # --- END OF NEW SECTION ---
+
+        ax.set_yscale('log')
+        ax.set_xlabel(r'$x$') # Changed from -x unless specifically needed
+        ax.set_ylabel('Fractional Error')
+        ax.set_title(f'Fractional Error for Bessel Function approx. (order={order})')
+        ax.grid(True, which="both", ls="-", alpha=0.5)
+        ax.legend()
+        fig.tight_layout()
+
+        return ax
+
+    def _calculate_error(self, y_true, y_pred, metric):
+        """Helper function to calculate error based on the chosen metric."""
+        epsilon = 1e-30
+        if metric == 'fractional':
+            return np.abs((y_true - y_pred) / (y_true + epsilon))
+        elif metric == 'absolute':
+            return np.abs(y_true - y_pred)
+        elif metric == 'normalized':
+            norm_factor = np.max(np.abs(y_true))
+            return np.abs(y_true - y_pred) / (norm_factor + epsilon)
+        elif metric == 'smape':
+            denominator = np.abs(y_true) + np.abs(y_pred)
+            return np.abs(y_true - y_pred) / (denominator + epsilon)
+        else:
+            raise ValueError("Unknown metric.")
+
+    def _bessel_series_J(self, x, v, n_terms):
+        """Calculates the truncated series for Bessel function J_v(x)."""
+        leading_factor = (x / 2)**v
+        total_sum = np.zeros_like(x, dtype=float)
+        # Sum from k=0 to n_terms (inclusive)
+        for k in range(n_terms + 1):
+            # Calculate the k-th term of the sum
+            term = ((-1)**k * (x / 2)**(2*k)) / (factorial(k) * gamma(v + k + 1))
+            total_sum += term
+        return leading_factor * total_sum
+
+    def plot_error(self, x_val, order, kind='first', spherical=False, ax=None, 
+                   metric='normalized', smoothing=None, window_size=50, num_bins=40,
+                   show_approx=False, show_trunc=False, trunc_index=5):
+        """
+        Plots various error metrics for the regression against the Bessel function.
+
+        Can also plot the error of the asymptotic approximation and truncated series.
+        
+        Args:
+            x_val (numpy.ndarray): X values for evaluation.
+            metric (str): The error metric to use.
+            show_approx (bool): If True, plots the error of the asymptotic approximation.
+            show_trunc (bool): If True, plots the error of the truncated series.
+            trunc_index (int): The number of terms (from k=0 to k=trunc_index) for the series.
+            ... (other args are the same)
+        """
+        # Ensure x_val is sorted for correct smoothing
+        sort_indices = np.argsort(x_val)
+        x_val = x_val[sort_indices]
+
+        # Calculate predicted and true values
+        X1 = sp.Symbol('X1')
+        f_lambdified = sp.lambdify(X1, self.numerical_expr, modules='numpy')
+        y_pred = f_lambdified(x_val)
+        
+        # Determine true values
+        if kind == 'second' and not spherical:
+            y_true = special.yv(order, x_val)
+        elif kind == 'second' and spherical:
+            y_true = special.spherical_yn(order, x_val)
+        elif kind == 'first' and spherical:
+            y_true = special.spherical_jn(order, x_val)
+        else: # Default to Jv
+            y_true = special.jv(order, x_val)
+
+        # --- Calculate all raw error arrays first ---
+        error_label = f'{metric.capitalize()} Error'
+        model_error = self._calculate_error(y_true, y_pred, metric)
+        
+        # Initialize error arrays for approximations as None
+        error_approx = None
+        error_trunc = None
+        
+        if show_approx and not spherical and kind == 'first':
+            safe_x = np.copy(x_val)
+            safe_x[safe_x == 0] = 1e-9 
+            y_asymptotic = np.sqrt(2 / (np.pi * safe_x)) * np.cos(safe_x - (np.pi / 2 * order) - (np.pi / 4))
+            error_approx = self._calculate_error(y_true, y_asymptotic, metric)
+
+        if show_trunc and not spherical and kind == 'first':
+            y_trunc = self._bessel_series_J(x_val, order, trunc_index)
+            error_trunc = self._calculate_error(y_true, y_trunc, metric)
+
+        # --- Plotting Section ---
+        fig, ax = plt.subplots(figsize=(12, 7)) if ax is None else (ax.figure, ax)
+        
+        # Plot the raw error of your symbolic model
+        ax.plot(x_val, model_error, linestyle='--', color='tab:blue', alpha=0.5, label='Symbolic Model Error (Raw)')
+        
+        if error_approx is not None:
+            ax.plot(x_val, error_approx, linestyle='--', color='tab:orange', alpha=0.5, label='Asymptotic Approx. Error (Raw)')
+        
+        if error_trunc is not None:
+            ax.plot(x_val, error_trunc, color='tab:green', alpha=0.7, label=f'Truncated Series Error (n={trunc_index})')
+
+        # --- MODIFIED: Expanded Smoothing Section ---
+        if smoothing == 'rolling':
+            # Always smooth the primary model's error
+            smoothed_model_error = pd.Series(model_error).rolling(window=window_size, center=True).mean()
+            ax.plot(x_val, smoothed_model_error, color='tab:blue', linewidth=2.5, label=f'Smoothed Model Error')
+            
+            # Conditionally smooth the approximation's error if it exists
+            if error_approx is not None:
+                smoothed_approx_error = pd.Series(error_approx).rolling(window=window_size, center=True).mean()
+                ax.plot(x_val, smoothed_approx_error, color='tab:orange', linewidth=2.5, label=f'Smoothed Asymptotic Error')
+
+        elif smoothing == 'binned':
+            # Always bin the primary model's error
+            bin_means_model, _, _ = binned_statistic(x_val, model_error, statistic='mean', bins=num_bins)
+            bin_centers = np.linspace(x_val.min(), x_val.max(), num_bins)
+            ax.plot(bin_centers, bin_means_model, color='tab:blue', marker='o', linestyle='-', label=f'Binned Model Error')
+            # Conditionally bin the approximation's error if it exists
+            if error_approx is not None:
+                bin_means_approx, _, _ = binned_statistic(x_val, error_approx, statistic='mean', bins=num_bins)
+                ax.plot(bin_centers, bin_means_approx, color='tab:orange', marker='x', linestyle='-', label=f'Binned Asymptotic Error')
+        
+        # --- End of modifications ---
+
+        ax.set_yscale('log')
+        ax.set_xlabel(r'$x$')
+        ax.set_ylabel(error_label)
+        ax.set_title(f'{error_label} Comparison for Bessel Function (order={order})')
+        ax.grid(True, which="both", ls="-", alpha=0.5)
+        ax.legend()
+        fig.tight_layout()
+
+        return ax
+
     def generate_constraints_from_expansion(self, var=sp.Symbol('X1'), const_target=1, linear_target=sp.Rational(2, 11)):
         """
         Generates optimization constraints based on the Taylor series expansion of the model.
@@ -1584,24 +1794,33 @@ class Promising_solution:
         it rounds the single cheapest parameter and then re-optimizes the others
         before deciding whether to accept the change.
         """
-        # --- Setup: Identify Active Parameters ---
+        # --- Setup: Identify Active Parameters (Corrected for consistent ordering) ---
         x_data, y_data = self.original_solution.problem.test_data
         all_symbols_in_expr = self.sympy_expr.free_symbols
-        all_param_names = self.modified_parameters.keys()
-        active_param_symbols = [s for s in all_symbols_in_expr if s.name in all_param_names]
-        active_param_names = sorted([s.name for s in active_param_symbols])
+        all_param_names_in_dict = self.modified_parameters.keys()
+
+        # BUG FIX: Establish a single, sorted, canonical order for parameters and use it everywhere.
+        # 1. Find the active parameter names by intersecting the expression's symbols and the provided dict keys.
+        active_param_names = sorted([s.name for s in all_symbols_in_expr if s.name in all_param_names_in_dict])
+        
+        # 2. Create the list of Symbol objects using this same sorted order.
+        active_param_symbols = [sp.Symbol(name) for name in active_param_names]
 
         if not active_param_names:
             print("  - No optimizable parameters found in the expression. No changes made.")
             return None
 
         print(f"  - Found active parameters in expression: {active_param_names}")
+        
+        # 3. Lambdify using the correctly sorted symbol list.
         f_lambdified = sp.lambdify(['X1'] + active_param_symbols, self.sympy_expr, modules='numpy')
 
         def objective_mse(b_values: np.ndarray) -> float:
             return np.mean((y_data - f_lambdified(x_data, *b_values))**2)
 
         # --- Step 1: Establish the Baseline ---
+        # 4. Create the array of values using the same sorted order.
+        # Now, the order of values perfectly matches the order expected by f_lambdified.
         params_best_float = np.array([self.modified_parameters[name] for name in active_param_names])
         baseline_mse = objective_mse(params_best_float)
         print(f"  - Baseline Best MSE: {baseline_mse:.6e}")
@@ -1609,11 +1828,8 @@ class Promising_solution:
         # --- Step 2: Iterative Refinement Loop ---
         print("\n--- Starting Iterative Refinement Process ---")
         
-        # Keep track of which parameters are floats and which are fixed as ints
         current_float_params = {name: val for name, val in zip(active_param_names, params_best_float)}
         final_int_params = {}
-        
-        # This will be updated after each successful rounding step
         current_best_mse = baseline_mse
 
         while True:
@@ -1621,31 +1837,32 @@ class Promising_solution:
                 print("\n  - All parameters have been rounded.")
                 break
 
-            # Find the cost of rounding each of the *remaining* float parameters
             costs = []
             for name_to_test in current_float_params.keys():
-                # The other floats that need re-optimizing
-                params_to_reopt_names = [name for name in current_float_params.keys() if name != name_to_test]
+                # ROBUSTNESS: Ensure this list is sorted for consistent ordering of the reduced problem.
+                params_to_reopt_names = sorted([name for name in current_float_params.keys() if name != name_to_test])
 
-                # If there are other floats, re-optimize them to see the true cost
                 if params_to_reopt_names:
                     def reduced_objective(free_vals):
                         b_values = []
                         free_vals_iter = iter(free_vals)
-                        # Build the full parameter array for the objective function
+                        reopt_names_iter = iter(params_to_reopt_names)
+                        
                         for name in active_param_names:
                             if name == name_to_test:
                                 b_values.append(round(current_float_params[name]))
                             elif name in final_int_params:
                                 b_values.append(final_int_params[name])
-                            else: # It's a float to be optimized
+                            else:
+                                # This ensures we take the next free value for the correct parameter.
+                                next(reopt_names_iter)
                                 b_values.append(next(free_vals_iter))
                         return objective_mse(np.array(b_values))
 
                     initial_guess_reduced = [current_float_params[name] for name in params_to_reopt_names]
                     res = minimize(reduced_objective, x0=initial_guess_reduced, method='L-BFGS-B')
                     cost_mse = res.fun
-                else: # This is the last float parameter, no re-optimization needed
+                else: 
                     b_values_list = []
                     for name in active_param_names:
                         if name == name_to_test:
@@ -1656,33 +1873,26 @@ class Promising_solution:
 
                 costs.append({'name': name_to_test, 'cost_mse': cost_mse})
 
-            # Find the cheapest parameter to round in this iteration
-            if not costs: break # Should not happen, but as a safeguard
+            if not costs: break
             cheapest_param = min(costs, key=lambda x: x['cost_mse'])
             name_to_round = cheapest_param['name']
             new_mse = cheapest_param['cost_mse']
             
-            # *** CORRECTED LOGIC V3: Properly define cost and handle improvements ***
             increase = new_mse - current_best_mse
-            
-            # The cost is the increase in error. If error decreases, cost is 0.
             cost = max(0, increase)
             relative_cost = cost / current_best_mse if current_best_mse > 1e-22 else float('inf')
             
             print(f"\n  - Cheapest candidate to round is '{name_to_round}'.")
-            print(f"    - If rounded, new MSE would be {new_mse:.6e} (Abs change: {increase:.6e}, Rel cost: {relative_cost:.2%})")
+            print(f"    - If rounded, new MSE would be {new_mse:.6e} (Abs change: {increase:.6e})")
 
-            # Check if this cheapest move is acceptable. Any improvement (increase <= 0) is acceptable.
             if increase <= 0 or relative_cost < threshold or abs(increase) < abs_mse_tol:
                 print(f"    - Cost is acceptable. Locking in '{name_to_round}' as an integer.")
-                # Lock it in: move from float dict to int dict
                 final_int_params[name_to_round] = round(current_float_params[name_to_round])
                 del current_float_params[name_to_round]
-                # Update the baseline for the next iteration
                 current_best_mse = new_mse
             else:
                 print("    - Cost of cheapest move exceeds threshold. Stopping refinement.")
-                break # The best move is too expensive, so we stop
+                break
 
         # --- Step 3: Create and Finalize the New Solution ---
         if not final_int_params:
@@ -1692,8 +1902,6 @@ class Promising_solution:
         print(f"\n  - Final parameters to be rounded: {list(final_int_params.keys())}")
         
         expression_w_int = self.sympy_expr.subs(final_int_params)
-        
-        # The remaining floats are in current_float_params
         b_vals_new = current_float_params
         
         Solution_w_integers = Promising_solution(
