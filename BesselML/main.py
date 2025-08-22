@@ -447,7 +447,143 @@ class Solution:
         ax.grid()
 
         return ax
-    
+
+
+        """Calculates the truncated series for Bessel function J_v(x)."""
+        leading_factor = (x / 2)**v
+        total_sum = np.zeros_like(x, dtype=float)
+        # Sum from k=0 to n_terms (inclusive)
+        for k in range(n_terms + 1):
+            # Calculate the k-th term of the sum
+            term = ((-1)**k * (x / 2)**(2*k)) / (factorial(k) * gamma(v + k + 1))
+            total_sum += term
+        return leading_factor * total_sum
+
+    def plot_error(self, x_val, order, kind='first', spherical=False, ax=None, 
+                   metric='normalized', smoothing=None, window_size=50, num_bins=40,
+                   show_approx=False, show_trunc=False, trunc_index=5):
+        """
+        Plots various error metrics for the regression against the Bessel function.
+
+        Can also plot the error of the asymptotic approximation and truncated series.
+        
+        Args:
+            x_val (numpy.ndarray): X values for evaluation.
+            metric (str): The error metric to use.
+            show_approx (bool): If True, plots the error of the asymptotic approximation.
+            show_trunc (bool): If True, plots the error of the truncated series.
+            trunc_index (int): The number of terms (from k=0 to k=trunc_index) for the series.
+            ... (other args are the same)
+        """
+        # Ensure x_val is sorted for correct smoothing
+        sort_indices = np.argsort(x_val)
+        x_val = x_val[sort_indices]
+
+        # Calculate predicted and true values
+        X1 = sp.Symbol('X1')
+        f_lambdified = sp.lambdify(X1, self.sympy_expr.subs(self.b_vals), modules='numpy')
+        y_pred = f_lambdified(x_val)
+        
+        # Determine true values
+        if kind == 'second' and not spherical:
+            y_true = special.yv(order, x_val)
+        elif kind == 'second' and spherical:
+            y_true = special.spherical_yn(order, x_val)
+        elif kind == 'first' and spherical:
+            y_true = special.spherical_jn(order, x_val)
+        else: # Default to Jv
+            y_true = special.jv(order, x_val)
+
+        # --- Calculate all raw error arrays first ---
+        error_label = f'{metric.capitalize()} Error'
+        model_error = self._calculate_error(y_true, y_pred, metric)
+        
+        # Initialize error arrays for approximations as None
+        error_approx = None
+        error_trunc = None
+        
+        if show_approx and not spherical and kind == 'first':
+            safe_x = np.copy(x_val)
+            safe_x[safe_x == 0] = 1e-9 
+            y_asymptotic = np.sqrt(2 / (np.pi * safe_x)) * np.cos(safe_x - (np.pi / 2 * order) - (np.pi / 4))
+            error_approx = self._calculate_error(y_true, y_asymptotic, metric)
+
+        if show_trunc and not spherical and kind == 'first':
+            y_trunc = self._bessel_series_J(x_val, order, trunc_index)
+            error_trunc = self._calculate_error(y_true, y_trunc, metric)
+
+        # --- Plotting Section ---
+        fig, ax = plt.subplots(figsize=(12, 7)) if ax is None else (ax.figure, ax)
+        
+        # Plot the raw error of your symbolic model
+        ax.plot(x_val, model_error, linestyle='--', color='tab:blue', alpha=0.5, label='Symbolic Model Error (Raw)')
+        
+        if error_approx is not None:
+            ax.plot(x_val, error_approx, linestyle='--', color='tab:orange', alpha=0.5, label='Asymptotic Approx. Error (Raw)')
+        
+        if error_trunc is not None:
+            ax.plot(x_val, error_trunc, color='tab:green', alpha=0.7, label=f'Truncated Series Error (n={trunc_index})')
+
+        # --- MODIFIED: Expanded Smoothing Section ---
+        if smoothing == 'rolling':
+            # Always smooth the primary model's error
+            smoothed_model_error = pd.Series(model_error).rolling(window=window_size, center=True).mean()
+            ax.plot(x_val, smoothed_model_error, color='tab:blue', linewidth=2.5, label=f'Smoothed Model Error')
+            
+            # Conditionally smooth the approximation's error if it exists
+            if error_approx is not None:
+                smoothed_approx_error = pd.Series(error_approx).rolling(window=window_size, center=True).mean()
+                ax.plot(x_val, smoothed_approx_error, color='tab:orange', linewidth=2.5, label=f'Smoothed Asymptotic Error')
+
+        elif smoothing == 'binned':
+            # Always bin the primary model's error
+            bin_means_model, _, _ = binned_statistic(x_val, model_error, statistic='mean', bins=num_bins)
+            bin_centers = np.linspace(x_val.min(), x_val.max(), num_bins)
+            ax.plot(bin_centers, bin_means_model, color='tab:blue', marker='o', linestyle='-', label=f'Binned Model Error')
+            # Conditionally bin the approximation's error if it exists
+            if error_approx is not None:
+                bin_means_approx, _, _ = binned_statistic(x_val, error_approx, statistic='mean', bins=num_bins)
+                ax.plot(bin_centers, bin_means_approx, color='tab:orange', marker='x', linestyle='-', label=f'Binned Asymptotic Error')
+        
+        # --- End of modifications ---
+
+        ax.set_yscale('log')
+        ax.set_xlabel(r'$x$')
+        ax.set_ylabel(error_label)
+        ax.set_title(f'{error_label} Comparison for Bessel Function (order={order})')
+        ax.grid(True, which="both", ls="-", alpha=0.5)
+        ax.legend()
+        fig.tight_layout()
+
+        return ax
+
+    def _calculate_error(self, y_true, y_pred, metric):
+        """Helper function to calculate error based on the chosen metric."""
+        epsilon = 1e-30
+        if metric == 'fractional':
+            return np.abs((y_true - y_pred) / (y_true + epsilon))
+        elif metric == 'absolute':
+            return np.abs(y_true - y_pred)
+        elif metric == 'normalized':
+            norm_factor = np.max(np.abs(y_true))
+            return np.abs(y_true - y_pred) / (norm_factor + epsilon)
+        elif metric == 'smape':
+            denominator = np.abs(y_true) + np.abs(y_pred)
+            return np.abs(y_true - y_pred) / (denominator + epsilon)
+        else:
+            raise ValueError("Unknown metric.")
+
+    def _bessel_series_J(self, x, v, n_terms):
+        """Calculates the truncated series for Bessel function J_v(x)."""
+        leading_factor = (x / 2)**v
+        total_sum = np.zeros_like(x, dtype=float)
+        # Sum from k=0 to n_terms (inclusive)
+        for k in range(n_terms + 1):
+            # Calculate the k-th term of the sum
+            term = ((-1)**k * (x / 2)**(2*k)) / (factorial(k) * gamma(v + k + 1))
+            total_sum += term
+        return leading_factor * total_sum
+
     def to_latex(self):
         """
         Convert the solution's expression to LaTeX format.
