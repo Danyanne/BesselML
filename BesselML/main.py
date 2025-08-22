@@ -854,7 +854,7 @@ class HyperParameterSearch:
             'allowed_symbols': optuna.distributions.CategoricalDistribution(["add,sub,mul,div,constant,variable,cos,sin,sqrt,square", "add,sub,mul,div,constant,variable,sin,sqrt,square", "add,sub,mul,div,constant,variable,cos,sin,sqrt", "add,sub,mul,div,constant,variable,cos,sin", "add,sub,mul,div,constant,variable,cos,sin,pow", "add,sub,mul,div,constant,variable,sqrt,square,pow"]),
             'max_length': optuna.distributions.IntDistribution(low=30, high=70, step=10),
             'tournament_size': optuna.distributions.IntDistribution(low=2, high=10),
-            'selection_pressure': optuna.distributions.IntDistribution(low=20, high=100, step=10)
+            'max_selection_pressure': optuna.distributions.IntDistribution(low=20, high=100, step=10)
         }
 
     @staticmethod
@@ -880,10 +880,10 @@ class HyperParameterSearch:
 
         return X_train_scaled, X_test_scaled, y_train_scaled, sc_X, sc_y
 
-    def run_for_dataset(self, dataset_name):
+    def run_for_data(self, dataset_name, X, y): # <-- Changed method name and signature
         """
         Performs a full hyperparameter search and evaluation for a single dataset.
-        This is the main logic method for the class.
+        This version accepts data arrays directly.
         """
         results_file = f'{self.results_dir}/{dataset_name}.csv'
         if os.path.exists(results_file):
@@ -891,13 +891,11 @@ class HyperParameterSearch:
             return
 
         print(f"Starting experiment for '{dataset_name}'...")
-        start_time = time.time()
 
-        try:
-            X, y = pmlb.fetch_data(dataset_name, return_X_y=True, local_cache_dir=self.datasets_dir)
-        except Exception as e:
-            print(f"Could not fetch data for '{dataset_name}': {e}")
-            return
+        # NOTE: We no longer fetch data from PMLB here.
+        # The X and y arrays are passed in directly.
+
+        start_time = time.time()
 
         X_train_full, X_test, y_train_full, y_test = train_test_split(X, y, train_size=0.75, random_state=42)
 
