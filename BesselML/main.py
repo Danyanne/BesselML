@@ -30,6 +30,15 @@ from scipy.optimize import minimize
 from scipy.stats import binned_statistic
 import pandas as pd
 from scipy.special import gamma, factorial
+import csv
+from multiprocessing import Pool, cpu_count
+import time
+import pmlb
+from pyoperon.sklearn import SymbolicRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import r2_score
+from sklearn.preprocessing import StandardScaler
+
 
 def create_arbitrary_constraint(expression_string: str, 
                             target_value: float, 
@@ -90,7 +99,6 @@ def create_arbitrary_constraint(expression_string: str,
         'type': constraint_type,
         'fun': defensive_fun
     }
-
 
 
 class Solution:
@@ -793,76 +801,162 @@ class Problem:
         return f"Problem: {self.name}, Train Data: {self.train_data[0].shape}, Test Data: {self.test_data[0].shape}, Solutions: {len(self.solutions)}, Solve_state: {self.solve_state}"
 
 
-class hyper_parameter_search:
+class HyperParameterSearch:
     """
-    A class for performing hyperparameter optimization for symbolic regression problems.
-    
-    This class uses Optuna to perform hyperparameter optimization for various parameters
-    of the symbolic regression process, such as epsilon and population size.
-    
-    Attributes:
-        problem (Problem): The symbolic regression problem to optimize
-        results (list): List to store optimization results
+    A class to perform a full hyperparameter search and evaluation pipeline
+    for symbolic regression on a given set of datasets.
     """
-    def __init__(self, problem):
+    def __init__(self,
+                 n_optuna_trials=100,
+                 n_repetitions=20,
+                 optuna_timeout=3600,
+                 scale_x=True,
+                 scale_y=True,
+                 max_samples_search=10000,
+                 results_dir='./results',
+                 datasets_dir='./datasets'):
         """
-        Initialize the hyperparameter search.
-        
+        Initializes the HyperParameterSearch configuration.
+
         Args:
-            problem (Problem): The symbolic regression problem to optimize
+            n_optuna_trials (int): Number of Optuna trials for the search.
+            n_repetitions (int): Number of times to re-run with the best parameters.
+            optuna_timeout (int): Timeout in seconds for the Optuna search per dataset.
+            scale_x (bool): Whether to scale input features (X).
+            scale_y (bool): Whether to scale the target variable (y).
+            max_samples_search (int): Subsample size for large datasets during search.
+            results_dir (str): Directory to save result CSV files.
+            datasets_dir (str): Directory to cache PMLB datasets.
         """
-        self.problem = problem
-        self.results = []
-    
-    def run_search_epsilon(self):
+        # --- Store configuration as instance attributes ---
+        self.n_optuna_trials = n_optuna_trials
+        self.n_repetitions = n_repetitions
+        self.optuna_timeout = optuna_timeout
+        self.scale_x = scale_x
+        self.scale_y = scale_y
+        self.max_samples_search = max_samples_search
+        self.results_dir = results_dir
+        self.datasets_dir = datasets_dir
+
+        # --- Define default regressor parameters and the search space ---
+        self.default_params = {
+            'offspring_generator': 'basic',
+            'initialization_method': 'btc',
+            'n_threads': 1,  # Use 1 thread per job; multiprocessing handles parallelism
+            'objectives': ['rmse', 'length'],
+            'max_evaluations': int(1e7),
+            'symbolic_mode': False,
+        }
+
+        self.param_search_space = {
+            'epsilon': optuna.distributions.FloatDistribution(1e-7, 1e-2, log=True),
+            'population_size': optuna.distributions.IntDistribution(low=100, high=1000, step=100),
+            'allowed_symbols': optuna.distributions.CategoricalDistribution(["add,sub,mul,div,constant,variable,cos,sin,sqrt,square", "add,sub,mul,div,constant,variable,sin,sqrt,square", "add,sub,mul,div,constant,variable,cos,sin,sqrt", "add,sub,mul,div,constant,variable,cos,sin", "add,sub,mul,div,constant,variable,cos,sin,pow", "add,sub,mul,div,constant,variable,sqrt,square,pow"]),
+            'max_length': optuna.distributions.IntDistribution(low=30, high=70, step=10),
+            'tournament_size': optuna.distributions.IntDistribution(low=2, high=10),
+            'selection_pressure': optuna.distributions.IntDistribution(low=20, high=100, step=10)
+        }
+
+    @staticmethod
+    def scale_data(X_train, X_test, y_train, scale_x_flag, scale_y_flag):
         """
-        Perform hyperparameter optimization for the epsilon parameter.
+        Applies StandardScaler to data. Made a static method as it doesn't depend on instance state.
+        """
+        sc_X, sc_y = None, None
         
-        This method uses Optuna to find the optimal value for the epsilon parameter,
-        which controls the convergence threshold in symbolic regression.
-        
-        Returns:
-            dict: The best parameters found during optimization
+        if scale_x_flag:
+            sc_X = StandardScaler()
+            X_train_scaled = sc_X.fit_transform(X_train)
+            X_test_scaled = sc_X.transform(X_test)
+        else:
+            X_train_scaled = X_train
+            X_test_scaled = X_test
+
+        if scale_y_flag:
+            sc_y = StandardScaler()
+            y_train_scaled = sc_y.fit_transform(y_train.reshape(-1, 1)).flatten()
+        else:
+            y_train_scaled = y_train
+
+        return X_train_scaled, X_test_scaled, y_train_scaled, sc_X, sc_y
+
+    def run_for_dataset(self, dataset_name):
         """
-        def objective(trial):
-            self.problem.solutions = []
-            epsilon = trial.suggest_float('epsilon', 1e-6, 1e-2)
-            self.problem.args['epsilon'] = epsilon
-            self.problem.solve()
-
-            accuracy = sum(solution.mse for solution in self.problem.solutions) / len(self.problem.solutions)
-
-            return accuracy
-
-        study = optuna.create_study(direction='minimize')
-        study.optimize(objective, n_trials=20)
-
-        return study.best_params
-    
-    def run_search_population_size(self):
+        Performs a full hyperparameter search and evaluation for a single dataset.
+        This is the main logic method for the class.
         """
-        Perform hyperparameter optimization for the population size parameter.
+        results_file = f'{self.results_dir}/{dataset_name}.csv'
+        if os.path.exists(results_file):
+            print(f"Skipping '{dataset_name}': Results file already exists.")
+            return
+
+        print(f"Starting experiment for '{dataset_name}'...")
+        start_time = time.time()
+
+        try:
+            X, y = pmlb.fetch_data(dataset_name, return_X_y=True, local_cache_dir=self.datasets_dir)
+        except Exception as e:
+            print(f"Could not fetch data for '{dataset_name}': {e}")
+            return
+
+        X_train_full, X_test, y_train_full, y_test = train_test_split(X, y, train_size=0.75, random_state=42)
+
+        if X_train_full.shape[0] > self.max_samples_search:
+            sample_idx = np.random.choice(np.arange(len(X_train_full)), size=self.max_samples_search, replace=False)
+            X_train_search, y_train_search = X_train_full[sample_idx], y_train_full[sample_idx]
+        else:
+            X_train_search, y_train_search = X_train_full, y_train_full
+
+        X_train_scaled, _, y_train_scaled, _, _ = self.scale_data(X_train_search, X_test, y_train_search, self.scale_x, self.scale_y)
+
+        print(f"[{dataset_name}] Starting Optuna search...")
+        regressor = SymbolicRegressor(**self.default_params)
+        study = optuna.create_study(study_name=dataset_name, direction='maximize')
+        optuna_search = optuna.integration.OptunaSearchCV(
+            estimator=regressor,
+            param_distributions=self.param_search_space,
+            cv=5, n_trials=self.n_optuna_trials, timeout=self.optuna_timeout,
+            study=study, refit=False, scoring='r2', n_jobs=1
+        )
         
-        This method uses Optuna to find the optimal value for the population size,
-        which controls the number of individuals in each generation during evolution.
+        optuna_search.fit(X_train_scaled, y_train_scaled)
+        best_params = optuna_search.best_params_
+        print(f"[{dataset_name}] Optuna search finished. Best params: {best_params}")
+
+        os.makedirs(self.results_dir, exist_ok=True)
+        header = ['dataset', 'repetition', 'r2_train', 'r2_test', 'model_length', 'model_complexity', 'generations', 'evaluation_count', 'random_state', 'model_string'] + list(best_params.keys())
         
-        Returns:
-            dict: The best parameters found during optimization
-        """
-        def objective(trial):
-            self.problem.solutions = []
-            population_size = trial.suggest_int('population_size', 50, 500)
-            self.problem.args['population_size'] = population_size
-            self.problem.solve()
+        with open(results_file, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
 
-            accuracy = sum(solution.mse for solution in self.problem.solutions) / len(self.problem.solutions)
+        print(f"[{dataset_name}] Running {self.n_repetitions} repetitions with best parameters...")
+        for rep in range(self.n_repetitions):
+            final_regressor = SymbolicRegressor(**(self.default_params | best_params))
+            X_train_s, X_test_s, y_train_s, sc_X, sc_y = self.scale_data(X_train_full, X_test, y_train_full, self.scale_x, self.scale_y)
+            final_regressor.fit(X_train_s, y_train_s)
 
-            return accuracy
+            y_pred_train = final_regressor.predict(X_train_s)
+            y_pred_test = final_regressor.predict(X_test_s)
+            
+            if self.scale_y:
+                y_pred_train = sc_y.inverse_transform(y_pred_train.reshape(-1, 1))
+                y_pred_test = sc_y.inverse_transform(y_pred_test.reshape(-1, 1))
 
-        study = optuna.create_study(direction='minimize')
-        study.optimize(objective, n_trials=30)
+            stats = {
+                'dataset': dataset_name, 'repetition': rep + 1,
+                'r2_train': r2_score(y_train_full, y_pred_train),
+                'r2_test': r2_score(y_test, y_pred_test),
+                'model_string': final_regressor.get_model_string(final_regressor.model_, 6),
+                **best_params, **final_regressor.stats_
+            }
+            
+            with open(results_file, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([stats.get(h, 'N/A') for h in header])
 
-        return study.best_params
+        elapsed_time = time.time() - start_time
+        print(f"[{dataset_name}] Experiment complete in {elapsed_time:.2f} seconds. Results saved to {results_file}")
 
 
 class Promising_solution:

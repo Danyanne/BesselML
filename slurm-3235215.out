@@ -1,4 +1,0 @@
-sbatch-INFO: start of job
-sbatch-INFO: nodes: n14
-sbatch-INFO: system: phoebe
-[2025-08-22T12:24:12.845] error: *** JOB 3235215 ON n14 CANCELLED AT 2025-08-22T12:24:12 DUE to SIGNAL Terminated ***
