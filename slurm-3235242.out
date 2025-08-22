@@ -1,0 +1,12 @@
+sbatch-INFO: start of job
+sbatch-INFO: nodes: n9
+sbatch-INFO: system: phoebe
+/var/spool/slurm/d/job3235242/slurm_script: line 12: cd: /home/ctvrta/BesselML/source/: No such file or directory
+/var/spool/slurm/d/job3235242/slurm_script: line 13: ../venv/bin/activate: No such file or directory
+Traceback (most recent call last):
+  File "/home/ctvrta/BesselML/optuna_hyperparams_search.py", line 1, in <module>
+    from main import HyperParameterSearch
+ModuleNotFoundError: No module named 'main'
+srun: error: n9: task 0: Exited with exit code 1
+sbatch-INFO: we're done
+Fri 22 Aug 15:26:06 CEST 2025
